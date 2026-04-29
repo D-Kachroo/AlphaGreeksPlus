@@ -1,6 +1,8 @@
 const BASE_URL = "https://www.alphavantage.co/query";
 const TRADING_DAYS_PER_YEAR = 252;
-const CACHE_MS = 5 * 60 * 1000;
+// Alpha Vantage free data is tightly rate-limited and this app primarily uses
+// daily history, so a longer cache window keeps the public demo usable.
+const CACHE_MS = 12 * 60 * 60 * 1000;
 
 const marketCache = new Map();
 
@@ -187,6 +189,14 @@ async function fetchMarketData(symbol) {
   }
 
   if (dailyError) {
+    if (cached?.data) {
+      return {
+        ...cached.data,
+        stale: true,
+        staleReason: dailyError.message,
+      };
+    }
+
     throw dailyError;
   }
 
@@ -199,6 +209,14 @@ async function fetchMarketData(symbol) {
         symbol: normalizedSymbol,
       });
     } catch (quoteError) {
+      if (cached?.data) {
+        return {
+          ...cached.data,
+          stale: true,
+          staleReason: quoteError.message,
+        };
+      }
+
       throw quoteError;
     }
   }

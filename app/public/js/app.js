@@ -6,6 +6,9 @@ let analysisTimer = null;
 let marketTapeState = "";
 let latestMarketData = null;
 let marketLookupTimer = null;
+let marketLookupInFlight = "";
+
+const MARKET_REFRESH_MS = 30 * 60 * 1000;
 
 function $(id) {
   return document.getElementById(id);
@@ -70,6 +73,10 @@ function titleCase(value) {
 
 function currentSymbol() {
   return $("symbol").value.trim().toUpperCase();
+}
+
+function validLookupSymbol(symbol) {
+  return /^[A-Z][A-Z.\-]{0,9}$/.test(String(symbol || "").trim().toUpperCase());
 }
 
 function roundedInput(value, digits = 4) {
@@ -327,11 +334,20 @@ function applyMarketData(data) {
 async function refreshMarketData(options = {}) {
   const symbol = currentSymbol();
 
-  if (!symbol) {
-    return;
+  if (!symbol || !validLookupSymbol(symbol)) {
+    return false;
+  }
+
+  if (!options.force && latestMarketData?.symbol === symbol) {
+    return true;
+  }
+
+  if (marketLookupInFlight === symbol) {
+    return false;
   }
 
   try {
+    marketLookupInFlight = symbol;
     const response = await fetch(`/api/market/${encodeURIComponent(symbol)}`);
     const data = await response.json();
 
@@ -342,16 +358,23 @@ async function refreshMarketData(options = {}) {
     if (applyMarketData(data) && options.runAnalysis !== false) {
       scheduleAnalysisRun();
     }
+
+    return true;
   } catch (error) {
-    console.debug(error.message);
+    setRunStatus(error.message);
     updateDeskWidgets();
+    return false;
+  } finally {
+    if (marketLookupInFlight === symbol) {
+      marketLookupInFlight = "";
+    }
   }
 }
 
-function scheduleMarketLookup(delay = 450) {
+function scheduleMarketLookup(delay = 0, options = {}) {
   window.clearTimeout(marketLookupTimer);
   marketLookupTimer = window.setTimeout(() => {
-    refreshMarketData().catch((error) => console.debug(error.message));
+    refreshMarketData(options).catch((error) => setRunStatus(error.message));
   }, delay);
 }
 
@@ -906,6 +929,10 @@ function bindEvents() {
     event.preventDefault();
 
     try {
+      if (currentSymbol() && latestMarketData?.symbol !== currentSymbol()) {
+        await refreshMarketData({ runAnalysis: false, force: true });
+      }
+
       await runAnalysis();
       await runScenario();
     } catch (error) {
@@ -919,10 +946,9 @@ function bindEvents() {
     if (!currentSymbol() || latestMarketData?.symbol !== currentSymbol()) {
       clearMarketDerivedInputs();
     }
-
-    scheduleMarketLookup();
   });
-  $("symbol").addEventListener("change", () => scheduleMarketLookup(0));
+  $("symbol").addEventListener("blur", () => scheduleMarketLookup(0, { force: true }));
+  $("symbol").addEventListener("change", () => scheduleMarketLookup(0, { force: true }));
 
   $("scenarioForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1000,7 +1026,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateDeskWidgets();
   updateMarketTape();
   window.setInterval(updateDeskWidgets, 1000);
-  window.setInterval(() => refreshMarketData().catch((error) => console.debug(error.message)), 90000);
+  window.setInterval(() => {
+    if (document.visibilityState === "visible" && currentSymbol()) {
+      refreshMarketData({ force: true }).catch((error) => setRunStatus(error.message));
+    }
+  }, MARKET_REFRESH_MS);
   await loadHealthStatus();
   clearAnalysisOutputs();
 });
