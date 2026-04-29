@@ -25,11 +25,11 @@ AlphaGreeks+ is a quantitative trading system that identifies stock mispricing s
 ## Project Structure
 
 ```text
-app/          Express API and frontend
+app/          AlphaVantage API and frontend
 core/         C++ pricing, Greeks, alpha, trade selection, and simulation
-tests/        C++ unit tests
+tests/        Unit tests
 docs/         Methodology, formulas, and deployment notes
-render.yaml   Render deployment config
+render.yaml   Render deployment configuration
 ```
 
 ## Local Setup
