@@ -4,9 +4,9 @@ AlphaGreeks+ is a quantitative trading system that identifies stock mispricing s
 
 ## Stack
 
-- C++17 quant core
+- C++ and QuantLib
 - Node.js and Express
-- Vanilla HTML, CSS, and JavaScript
+- HTML, CSS, and JavaScript
 - Plotly.js
 - Alpha Vantage
 - Render
