@@ -1,6 +1,6 @@
 # AlphaGreeks+
 
-AlphaGreeks+ is a quantitative trading system that identifies stock mispricing signals and determines optimal options trades with Black-Scholes pricing, full Greek risk analysis, and an interactive simulator.
+AlphaGreeks+ is a quantitative trading system that identifies stock mispricing signals and determines optimal options trades with Black-Scholes pricing, Greek risk analysis, and an interactive simulator.
 
 ## Stack
 
