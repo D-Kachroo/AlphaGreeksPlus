@@ -1,0 +1,22 @@
+{
+  "name": "alphagreeks-plus",
+  "version": "0.1.0",
+  "description": "A minimal quantitative trading system for stock mispricing signals and Greek-based options analysis.",
+  "main": "app/server.js",
+  "scripts": {
+    "build": "npm run build:core",
+    "start": "node app/server.js",
+    "build:core": "make -C core",
+    "clean:core": "make -C core clean",
+    "test": "npm run build:core && npm run test:core && npm run check:js",
+    "test:core": "make -C core test",
+    "check:js": "node --check app/server.js && node --check app/routes/analyze.js && node --check app/routes/market.js && node --check app/routes/simulate.js && node --check app/services/market-data.js && node --check app/services/quant-core.js && node --check app/public/js/app.js && node --check app/public/js/charts.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

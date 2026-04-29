@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: alphagreeks-plus
+    env: node
+    plan: free
+    buildCommand: npm install && npm test
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ALPHA_VANTAGE_API_KEY
+        sync: false

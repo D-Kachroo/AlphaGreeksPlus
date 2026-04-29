@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlphaGreeks+</title>
+    <link rel="stylesheet" href="/css/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>AlphaGreeks+</h1>
+        </div>
+        <div class="status-strip">
+          <span class="byline">By: David Kachroo</span>
+          <span id="apiStatus" class="live-status">Checking<i></i></span>
+        </div>
+      </header>
+
+      <section class="market-tape" aria-label="Market tape">
+        <div class="tape-led">Market Tape</div>
+        <div class="tape-window">
+          <div class="tape-track" id="tapeTrack"></div>
+        </div>
+      </section>
+
+      <section class="desk-strip" aria-label="Trading desk status">
+        <article class="desk-card">
+          <span>Local Time</span>
+          <strong id="deskClock">--:--:--</strong>
+        </article>
+        <article class="desk-card">
+          <span>National Best Bid and Offer (NBBO)</span>
+          <strong id="deskNbbo">-</strong>
+        </article>
+        <article class="desk-card">
+          <span>Spread</span>
+          <strong id="deskSpread">-</strong>
+        </article>
+        <article class="desk-card">
+          <span>Volume</span>
+          <strong id="deskVolume">-</strong>
+        </article>
+        <article class="desk-card">
+          <span># of Options Loaded</span>
+          <strong id="deskOpenInterest">-</strong>
+        </article>
+        <article class="desk-card">
+          <span>Order Type</span>
+          <strong id="deskOrderType">Limit</strong>
+        </article>
+      </section>
+
+      <section class="workspace">
+        <form id="analysisForm" class="control-panel">
+          <div class="panel-head">
+            <div>
+              <h2>1. Stock Value</h2>
+              <p class="section-help">Enter an option symbol (ticker) and what you think it's worth (fair value) in CAD based on its market price.</p>
+            </div>
+            <button class="ghost-button" id="resetButton" type="button">Reset</button>
+          </div>
+
+          <div class="field-grid">
+            <label>
+              <span>Symbol</span>
+              <input id="symbol" name="symbol" autocomplete="off" placeholder="AAPL, MSFT, TSLA..." />
+            </label>
+            <label>
+              <span>Market Price</span>
+              <input id="marketPrice" name="marketPrice" type="number" step="0.01" placeholder="Auto-filled" />
+            </label>
+            <label>
+              <span>Fair Value</span>
+              <input id="fairValueEstimate" name="fairValueEstimate" type="number" step="0.01" placeholder="Your estimate" />
+            </label>
+            <label>
+              <span>Expected Return</span>
+              <input id="expectedReturn" name="expectedReturn" type="number" step="0.0001" placeholder="Auto-filled" />
+            </label>
+            <label>
+              <span>Stock Volatility</span>
+              <input id="signalVolatility" name="signalVolatility" type="number" step="0.0001" placeholder="Auto-filled" />
+            </label>
+            <label>
+              <span>Confidence</span>
+              <input id="confidence" name="confidence" type="range" min="0" max="1" step="0.01" value="0.5" />
+              <strong id="confidenceValue">0.50</strong>
+            </label>
+          </div>
+
+          <div class="panel-head compact">
+            <div>
+              <h2>2. Risk Limits</h2>
+              <p class="section-help">Set the highest option cost and Delta risk you want.</p>
+            </div>
+          </div>
+
+          <div class="field-grid two">
+            <label>
+              <span>Highest Option Cost</span>
+              <input id="maxPremium" name="maxPremium" type="number" step="0.01" placeholder="Optional" />
+            </label>
+            <label>
+              <span>Highest Delta Risk</span>
+              <input id="maxAbsoluteDelta" name="maxAbsoluteDelta" type="number" min="0.01" max="1" step="0.01" placeholder="Optional" />
+            </label>
+          </div>
+
+          <div class="panel-head compact">
+            <div>
+              <h2>3. Options to Compare</h2>
+              <p class="section-help">Add calls and puts. The app scores each one.</p>
+            </div>
+            <button class="ghost-button" id="addContractButton" type="button">Add</button>
+          </div>
+
+          <div class="contracts" id="contracts"></div>
+
+          <div class="action-row">
+            <button class="primary-button" type="submit">Run Trades</button>
+          </div>
+        </form>
+
+        <section class="results-panel">
+          <div class="metric-grid">
+            <article class="metric">
+              <span>Trade Signal</span>
+              <strong id="ratingMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Price Gap</span>
+              <strong id="mispricingMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Recommended Trade</span>
+              <strong id="tradeMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Option Cost</span>
+              <strong id="premiumMetric">-</strong>
+            </article>
+          </div>
+
+          <section class="greeks-guide" aria-label="Greek definitions">
+            <div>
+              <h2>The 5 Greeks</h2>
+              <p class="section-help">Use these metrics to understand the main risks before you trade options.</p>
+            </div>
+            <div class="greek-grid">
+              <article>
+                <strong>Delta</strong>
+                <span>How much the option changes when the stock moves $1.</span>
+              </article>
+              <article>
+                <strong>Gamma</strong>
+                <span>How fast Delta changes when the stock moves.</span>
+              </article>
+              <article>
+                <strong>Theta</strong>
+                <span>How much value the option loses daily.</span>
+              </article>
+              <article>
+                <strong>Vega</strong>
+                <span>How much the option changes when volatility moves.</span>
+              </article>
+              <article>
+                <strong>Rho</strong>
+                <span>How much the option changes when interest rates move.</span>
+              </article>
+            </div>
+          </section>
+
+          <div class="chart-grid">
+            <div class="chart-panel large">
+              <div class="chart-section-head">
+                <h2>Ranked Order of Trades</h2>
+                <p class="section-help">Scores compare each option using price edge, cost, and Greek risk.</p>
+              </div>
+              <div id="tradeScoreChart" class="chart"></div>
+            </div>
+            <section class="alpha-panel chart-panel" aria-label="Alpha edge">
+              <div class="chart-section-head">
+                <h2>Alpha Edge</h2>
+                <p class="section-help">Shows the fair-value gap, weighted by your confidence level.</p>
+              </div>
+              <div class="alpha-layout">
+                <div class="alpha-summary">
+                  <article>
+                    <span>Dollar Edge</span>
+                    <strong id="alphaSignalMetric">-</strong>
+                  </article>
+                  <article>
+                    <span>Weighted Edge</span>
+                    <strong id="alphaGapMetric">-</strong>
+                  </article>
+                  <article>
+                    <span>Return View</span>
+                    <strong id="alphaConfidenceMetric">-</strong>
+                  </article>
+                </div>
+                <div class="alpha-visual">
+                  <div class="alpha-scale">
+                    <span>
+                      <b>Market Price</b>
+                      <em id="alphaMarketPriceMetric">-</em>
+                    </span>
+                    <strong id="alphaGaugeMetric">-</strong>
+                    <span>
+                      <b>Fair Value</b>
+                      <em id="alphaFairValueMetric">-</em>
+                    </span>
+                  </div>
+                  <div class="alpha-meter" aria-hidden="true">
+                    <i id="alphaMeterFill"></i>
+                    <b id="alphaMarketMarker"></b>
+                    <em id="alphaFairMarker"></em>
+                  </div>
+                  <div class="alpha-caption" id="alphaCaption">-</div>
+                </div>
+              </div>
+            </section>
+            <div class="chart-panel risk-panel">
+              <div class="chart-section-head">
+                <h2>Risk Profile (Greeks)</h2>
+                <p class="section-help"> The 5 Greeks show how the option premium reacts to changes in price, time, volatility, and interest rates.</p>
+              </div>
+              <div class="greek-risk-strip">
+                <article>
+                  <span>Delta</span>
+                  <strong id="greekDeltaView">-</strong>
+                  <small>Premium / Stock Price</small>
+                </article>
+                <article>
+                  <span>Gamma</span>
+                  <strong id="greekGammaView">-</strong>
+                  <small>Delta / Stock Price</small>
+                </article>
+                <article>
+                  <span>Theta</span>
+                  <strong id="greekThetaView">-</strong>
+                  <small>Premium / Time</small>
+                </article>
+                <article>
+                  <span>Vega</span>
+                  <strong id="greekVegaView">-</strong>
+                  <small>Premium / Volatility</small>
+                </article>
+                <article>
+                  <span>Rho</span>
+                  <strong id="greekRhoView">-</strong>
+                  <small>Premium / Int. Rate</small>
+                </article>
+              </div>
+              <div id="greeksChart" class="chart"></div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="scenario-band">
+        <form id="scenarioForm" class="scenario-controls">
+          <div class="panel-head">
+            <div>
+              <h2>4. Test a New Scenario</h2>
+              <p class="section-help">Move the sliders. The prices and charts update right away.</p>
+            </div>
+            <button class="primary-button slim" type="submit">Simulate</button>
+          </div>
+
+          <div class="slider-grid">
+            <label>
+              <span>Change in Stock Price</span>
+              <input id="spotMovePercent" type="range" min="-30" max="30" step="1" value="10" />
+              <strong id="spotMoveValue">10%</strong>
+            </label>
+            <label>
+              <span>Change in Volatility</span>
+              <input id="volatilityMovePercent" type="range" min="-50" max="50" step="1" value="5" />
+              <strong id="volMoveValue">5%</strong>
+            </label>
+            <label>
+              <span># of Days Passed</span>
+              <input id="daysForward" type="range" min="0" max="180" step="1" value="30" />
+              <strong id="daysValue">30</strong>
+            </label>
+            <label>
+              <span>Change in Interest Rate</span>
+              <input id="rateMoveBasisPoints" type="range" min="-200" max="200" step="5" value="25" />
+              <strong id="rateMoveValue">25 bps</strong>
+            </label>
+          </div>
+        </form>
+
+        <div class="scenario-metrics">
+          <article class="metric">
+            <span>Option Price Now</span>
+            <strong id="basePriceMetric">-</strong>
+          </article>
+          <article class="metric">
+            <span>Option Price After Move</span>
+            <strong id="stressedPriceMetric">-</strong>
+          </article>
+          <article class="metric">
+            <span>Estimated Profit or Loss</span>
+            <strong id="pnlMetric">-</strong>
+          </article>
+        </div>
+
+        <div class="chart-grid scenario-charts">
+          <div class="chart-panel large">
+            <div id="scenarioSurfaceChart" class="chart tall"></div>
+          </div>
+          <div class="chart-panel">
+            <div id="scenarioLineChart" class="chart tall"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <template id="contractTemplate">
+      <article class="contract-row">
+        <label>
+          <span>Type</span>
+          <select data-field="type" aria-label="Option type">
+            <option value="call">Call</option>
+            <option value="put">Put</option>
+          </select>
+        </label>
+        <label>
+          <span>Stock Price</span>
+          <input data-field="spotPrice" aria-label="Stock price" type="number" step="0.01" />
+        </label>
+        <label>
+          <span>Strike Price</span>
+          <input data-field="strikePrice" aria-label="Strike price" type="number" step="0.01" />
+        </label>
+        <label>
+          <span>Risk-Free Rate</span>
+          <input data-field="riskFreeRate" aria-label="Risk-free rate" type="number" step="0.001" />
+        </label>
+        <label>
+          <span>Volatility</span>
+          <input data-field="volatility" aria-label="Volatility" type="number" step="0.0001" />
+        </label>
+        <label>
+          <span>Years to Expiration</span>
+          <input data-field="timeToExpirationYears" aria-label="Years to expiration" type="number" step="0.01" />
+        </label>
+        <label>
+          <span>Dividend Yield</span>
+          <input data-field="dividendYield" aria-label="Dividend yield" type="number" step="0.001" />
+        </label>
+        <button data-action="remove" class="icon-button remove-contract" type="button" aria-label="Remove contract">Remove</button>
+      </article>
+    </template>
+
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <script src="/js/charts.js"></script>
+    <script src="/js/app.js"></script>
+  </body>
+</html>
