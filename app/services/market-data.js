@@ -9,6 +9,7 @@ const CACHE_MS = 12 * 60 * 60 * 1000;
 const CACHE_PATH = path.join(__dirname, "..", "..", "data", "market-cache.json");
 
 const marketCache = new Map();
+const symbolResolutionCache = new Map();
 
 function ensureCacheDirectory() {
   fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
@@ -121,6 +122,19 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizeSymbol(symbol) {
+  return String(symbol || "").trim().toUpperCase();
+}
+
+function directSymbolCandidates(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  const swappedDotDash = normalized.includes(".") ? normalized.replace(/\./g, "-") : normalized;
+  const swappedDashDot = normalized.includes("-") ? normalized.replace(/-/g, ".") : normalized;
+  const compact = normalized.replace(/\s+/g, "");
+
+  return [...new Set([normalized, swappedDotDash, swappedDashDot, compact].filter(Boolean))];
+}
+
 function parseDailyCloses(payload) {
   const series = payload["Time Series (Daily)"] || payload["Time Series (Daily Adjusted)"] || {};
 
@@ -223,8 +237,128 @@ function staleSnapshot(entry, reason) {
   };
 }
 
+function bestMatchScore(inputSymbol, match) {
+  const input = normalizeSymbol(inputSymbol);
+  const symbol = normalizeSymbol(match?.["1. symbol"]);
+  const type = String(match?.["3. type"] || "").toLowerCase();
+  const region = String(match?.["4. region"] || "").toLowerCase();
+  const apiScore = Number(match?.["9. matchScore"] || 0);
+
+  let score = apiScore;
+
+  if (symbol === input) {
+    score += 5;
+  }
+
+  if (symbol.replace(/\./g, "-") === input.replace(/\./g, "-")) {
+    score += 3;
+  }
+
+  if (type === "equity" || type === "etf" || type === "mutual fund") {
+    score += 0.5;
+  }
+
+  if (region.includes("united states") || region.includes("canada")) {
+    score += 0.1;
+  }
+
+  return score;
+}
+
+async function resolveAlphaVantageSymbol(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  const cached = symbolResolutionCache.get(normalized);
+
+  if (cached) {
+    return cached;
+  }
+
+  const payload = await fetchAlphaVantage({
+    function: "SYMBOL_SEARCH",
+    keywords: normalized,
+  });
+  const matches = Array.isArray(payload.bestMatches) ? payload.bestMatches : [];
+
+  if (matches.length === 0) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const bestMatch = [...matches].sort(
+    (left, right) => bestMatchScore(normalized, right) - bestMatchScore(normalized, left)
+  )[0];
+  const resolved = normalizeSymbol(bestMatch?.["1. symbol"]);
+
+  if (!resolved) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  symbolResolutionCache.set(normalized, resolved);
+  return resolved;
+}
+
+async function fetchDailySeries(symbol) {
+  const candidates = directSymbolCandidates(symbol);
+  let lastNotFoundError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const payload = await fetchAlphaVantage({
+        function: "TIME_SERIES_DAILY",
+        symbol: candidate,
+        outputsize: "compact",
+      });
+
+      if (parseDailyCloses(payload).length > 0) {
+        return {
+          payload,
+          apiSymbol: candidate,
+        };
+      }
+
+      lastNotFoundError = new Error("Alpha Vantage did not find market data for this symbol.");
+      lastNotFoundError.statusCode = 400;
+    } catch (error) {
+      if (error.statusCode === 400) {
+        lastNotFoundError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  const resolvedSymbol = await resolveAlphaVantageSymbol(symbol);
+
+  if (candidates.includes(resolvedSymbol)) {
+    throw lastNotFoundError;
+  }
+
+  const resolvedPayload = await fetchAlphaVantage({
+    function: "TIME_SERIES_DAILY",
+    symbol: resolvedSymbol,
+    outputsize: "compact",
+  });
+
+  if (parseDailyCloses(resolvedPayload).length === 0) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  symbolResolutionCache.set(normalizeSymbol(symbol), resolvedSymbol);
+
+  return {
+    payload: resolvedPayload,
+    apiSymbol: resolvedSymbol,
+  };
+}
+
 async function fetchMarketData(symbol) {
-  const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+  const normalizedSymbol = normalizeSymbol(symbol);
 
   if (!normalizedSymbol) {
     const error = new Error("symbol is required.");
@@ -243,15 +377,14 @@ async function fetchMarketData(symbol) {
   }
 
   let dailyPayload = {};
+  let apiSymbol = normalizedSymbol;
   let quotePayload = {};
   let dailyError = null;
 
   try {
-    dailyPayload = await fetchAlphaVantage({
-      function: "TIME_SERIES_DAILY",
-      symbol: normalizedSymbol,
-      outputsize: "compact",
-    });
+    const dailySeries = await fetchDailySeries(normalizedSymbol);
+    dailyPayload = dailySeries.payload;
+    apiSymbol = dailySeries.apiSymbol;
   } catch (error) {
     dailyError = error;
   }
@@ -270,7 +403,7 @@ async function fetchMarketData(symbol) {
     try {
       quotePayload = await fetchAlphaVantage({
         function: "GLOBAL_QUOTE",
-        symbol: normalizedSymbol,
+        symbol: apiSymbol,
       });
     } catch (quoteError) {
       if (cached?.data) {
@@ -282,6 +415,7 @@ async function fetchMarketData(symbol) {
   }
 
   const data = buildMarketSnapshot(normalizedSymbol, quotePayload, dailyPayload);
+  data.apiSymbol = apiSymbol;
 
   if (!data.lastPrice) {
     const error = new Error(`No Alpha Vantage market data found for ${normalizedSymbol}.`);
