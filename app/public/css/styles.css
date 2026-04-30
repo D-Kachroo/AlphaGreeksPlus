@@ -336,6 +336,22 @@ h2 {
   width: 10px;
 }
 
+.live-status.status-cached i {
+  background: #f3c74f;
+  box-shadow:
+    0 0 8px rgba(243, 199, 79, 0.9),
+    0 0 18px rgba(243, 199, 79, 0.45);
+}
+
+.live-status.status-offline i {
+  animation: none;
+  background: #ff5454;
+  box-shadow:
+    0 0 8px rgba(255, 84, 84, 0.7),
+    0 0 14px rgba(255, 84, 84, 0.32);
+  opacity: 0.95;
+}
+
 @keyframes onlinePulse {
   0% {
     opacity: 0.72;

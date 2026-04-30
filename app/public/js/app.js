@@ -165,6 +165,18 @@ function setRunStatus(text) {
   }
 }
 
+function setApiStatus(text, state = "live") {
+  const status = $("apiStatus");
+
+  if (!status) {
+    return;
+  }
+
+  status.classList.remove("status-live", "status-cached", "status-offline");
+  status.classList.add(`status-${state}`);
+  status.innerHTML = `${text}<i></i>`;
+}
+
 function signalDirectionText(mispricingPercent) {
   if (mispricingPercent > 0) {
     return "Bullish";
@@ -275,9 +287,9 @@ function setTradeSignalMetric(metric, result) {
 async function loadHealthStatus() {
   try {
     await fetch("/api/health");
-    $("apiStatus").innerHTML = "Online<i></i>";
+    setApiStatus("Online", "live");
   } catch (_error) {
-    $("apiStatus").innerHTML = "Offline<i></i>";
+    setApiStatus("Offline", "offline");
   }
 }
 
@@ -325,6 +337,8 @@ function applyMarketData(data) {
     $("signalVolatility").value = roundedInput(data.volatility, 4);
   }
 
+  setApiStatus(data.stale ? "Cached" : "Online", data.stale ? "cached" : "live");
+
   updateContractMarketInputs(data.lastPrice, data.volatility);
   updateDeskWidgets();
   updateMarketTape();
@@ -362,6 +376,11 @@ async function refreshMarketData(options = {}) {
     return true;
   } catch (error) {
     setRunStatus(error.message);
+    if (latestMarketData) {
+      setApiStatus("Cached", "cached");
+    } else {
+      setApiStatus("Offline", "offline");
+    }
     updateDeskWidgets();
     return false;
   } finally {

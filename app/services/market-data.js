@@ -1,56 +1,110 @@
+const fs = require("fs");
+const path = require("path");
+
 const BASE_URL = "https://www.alphavantage.co/query";
 const TRADING_DAYS_PER_YEAR = 252;
 // Alpha Vantage free data is tightly rate-limited and this app primarily uses
 // daily history, so a longer cache window keeps the public demo usable.
 const CACHE_MS = 12 * 60 * 60 * 1000;
+const CACHE_PATH = path.join(__dirname, "..", "..", "data", "market-cache.json");
 
 const marketCache = new Map();
 
-function apiKey() {
-  const key = process.env.ALPHA_VANTAGE_API_KEY;
+function ensureCacheDirectory() {
+  fs.mkdirSync(path.dirname(CACHE_PATH), { recursive: true });
+}
 
-  if (!key) {
+function loadPersistentCache() {
+  try {
+    if (!fs.existsSync(CACHE_PATH)) {
+      return;
+    }
+
+    const payload = JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+
+    Object.entries(payload).forEach(([symbol, entry]) => {
+      if (entry?.data && Number.isFinite(entry?.timestamp)) {
+        marketCache.set(symbol, entry);
+      }
+    });
+  } catch (_error) {
+    // Ignore cache boot errors and keep the live app running.
+  }
+}
+
+function persistCache() {
+  try {
+    ensureCacheDirectory();
+    fs.writeFileSync(CACHE_PATH, JSON.stringify(Object.fromEntries(marketCache), null, 2));
+  } catch (_error) {
+    // Ignore cache write errors; live fetches are still the primary source.
+  }
+}
+
+function apiKeys() {
+  const rawKeys = process.env.ALPHA_VANTAGE_API_KEY;
+
+  if (!rawKeys) {
     const error = new Error("ALPHA_VANTAGE_API_KEY is required.");
     error.statusCode = 500;
     throw error;
   }
 
-  return key;
+  const keys = rawKeys
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+
+  if (keys.length === 0) {
+    const error = new Error("ALPHA_VANTAGE_API_KEY is required.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  return keys;
 }
 
 async function fetchAlphaVantage(params) {
-  const url = new URL(BASE_URL);
+  const keys = apiKeys();
+  let lastError = null;
 
-  Object.entries({ ...params, apikey: apiKey() }).forEach(([key, value]) => {
-    url.searchParams.set(key, value);
-  });
+  for (const apiKey of keys) {
+    const url = new URL(BASE_URL);
 
-  const response = await fetch(url);
+    Object.entries({ ...params, apikey: apiKey }).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
 
-  if (!response.ok) {
-    const error = new Error(`Alpha Vantage request failed with status ${response.status}.`);
-    error.statusCode = 502;
-    throw error;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const error = new Error(`Alpha Vantage request failed with status ${response.status}.`);
+      error.statusCode = 502;
+      throw error;
+    }
+
+    const payload = await response.json();
+
+    if (payload["Error Message"]) {
+      const error = new Error("Alpha Vantage did not find market data for this symbol.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (payload.Note || payload.Information) {
+      lastError = new Error(
+        payload.Information
+          ? "Alpha Vantage daily request limit reached. Please try again later."
+          : "Alpha Vantage request limit reached. Please wait and try again."
+      );
+      lastError.statusCode = 429;
+      continue;
+    }
+
+    return payload;
   }
 
-  const payload = await response.json();
-
-  if (payload.Note || payload.Information) {
-    const message = payload.Information
-      ? "Alpha Vantage daily request limit reached. Please try again later."
-      : "Alpha Vantage request limit reached. Please wait and try again.";
-    const error = new Error(message);
-    error.statusCode = 429;
-    throw error;
-  }
-
-  if (payload["Error Message"]) {
-    const error = new Error("Alpha Vantage did not find market data for this symbol.");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  return payload;
+  throw lastError;
 }
 
 function numberFromField(source, key) {
@@ -156,6 +210,16 @@ function buildMarketSnapshot(symbol, quotePayload, dailyPayload) {
     expectedReturnSource: dailyPoints.length >= 2 ? "Alpha Vantage daily history" : "Alpha Vantage quote change",
     source: "Alpha Vantage",
     fetchedAt: new Date().toISOString(),
+    stale: false,
+  };
+}
+
+function staleSnapshot(entry, reason) {
+  return {
+    ...entry.data,
+    stale: true,
+    staleReason: reason,
+    cacheAgeMs: Date.now() - entry.timestamp,
   };
 }
 
@@ -171,7 +235,11 @@ async function fetchMarketData(symbol) {
   const cached = marketCache.get(normalizedSymbol);
 
   if (cached && Date.now() - cached.timestamp < CACHE_MS) {
-    return cached.data;
+    return {
+      ...cached.data,
+      stale: false,
+      cacheAgeMs: Date.now() - cached.timestamp,
+    };
   }
 
   let dailyPayload = {};
@@ -190,11 +258,7 @@ async function fetchMarketData(symbol) {
 
   if (dailyError) {
     if (cached?.data) {
-      return {
-        ...cached.data,
-        stale: true,
-        staleReason: dailyError.message,
-      };
+      return staleSnapshot(cached, dailyError.message);
     }
 
     throw dailyError;
@@ -210,11 +274,7 @@ async function fetchMarketData(symbol) {
       });
     } catch (quoteError) {
       if (cached?.data) {
-        return {
-          ...cached.data,
-          stale: true,
-          staleReason: quoteError.message,
-        };
+        return staleSnapshot(cached, quoteError.message);
       }
 
       throw quoteError;
@@ -233,9 +293,12 @@ async function fetchMarketData(symbol) {
     data,
     timestamp: Date.now(),
   });
+  persistCache();
 
   return data;
 }
+
+loadPersistentCache();
 
 module.exports = {
   fetchMarketData,
