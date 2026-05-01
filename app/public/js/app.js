@@ -9,6 +9,7 @@ let marketLookupTimer = null;
 let marketLookupInFlight = "";
 
 const MARKET_REFRESH_MS = 30 * 60 * 1000;
+const BROWSER_MARKET_CACHE_KEY = "alphagreeks.marketCache.v1";
 
 function $(id) {
   return document.getElementById(id);
@@ -77,6 +78,49 @@ function currentSymbol() {
 
 function validLookupSymbol(symbol) {
   return /^[A-Z][A-Z.\-]{0,9}$/.test(String(symbol || "").trim().toUpperCase());
+}
+
+function readBrowserMarketCache() {
+  try {
+    return JSON.parse(window.localStorage.getItem(BROWSER_MARKET_CACHE_KEY) || "{}");
+  } catch (_error) {
+    return {};
+  }
+}
+
+function writeBrowserMarketCache(cache) {
+  try {
+    window.localStorage.setItem(BROWSER_MARKET_CACHE_KEY, JSON.stringify(cache));
+  } catch (_error) {
+    // Ignore browser storage failures.
+  }
+}
+
+function storeBrowserMarketData(data) {
+  if (!data?.symbol) {
+    return;
+  }
+
+  const cache = readBrowserMarketCache();
+  cache[data.symbol] = {
+    data,
+    timestamp: Date.now(),
+  };
+  writeBrowserMarketCache(cache);
+}
+
+function loadBrowserMarketData(symbol) {
+  const entry = readBrowserMarketCache()[symbol];
+
+  if (!entry?.data) {
+    return null;
+  }
+
+  return {
+    ...entry.data,
+    stale: true,
+    cacheAgeMs: Date.now() - Number(entry.timestamp || Date.now()),
+  };
 }
 
 function roundedInput(value, digits = 4) {
@@ -337,6 +381,7 @@ function applyMarketData(data) {
     $("signalVolatility").value = roundedInput(data.volatility, 4);
   }
 
+  storeBrowserMarketData(data);
   setApiStatus(data.stale ? "Cached" : "Online", data.stale ? "cached" : "live");
 
   updateContractMarketInputs(data.lastPrice, data.volatility);
@@ -375,6 +420,16 @@ async function refreshMarketData(options = {}) {
 
     return true;
   } catch (error) {
+    const cachedData = loadBrowserMarketData(symbol);
+
+    if (cachedData && applyMarketData(cachedData)) {
+      if (options.runAnalysis !== false) {
+        scheduleAnalysisRun();
+      }
+
+      return true;
+    }
+
     setRunStatus(error.message);
     if (latestMarketData) {
       setApiStatus("Cached", "cached");
