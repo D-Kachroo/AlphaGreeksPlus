@@ -3,6 +3,8 @@ const fs = require("fs");
 const path = require("path");
 
 const CORE_BINARY = path.join(__dirname, "..", "..", "core", "build", "alphagreeks");
+const CORE_DIR = path.join(__dirname, "..", "..", "core");
+let buildCorePromise = null;
 
 function getNumber(source, camelKey, snakeKey = camelKey) {
   const value = source[camelKey] ?? source[snakeKey];
@@ -109,13 +111,52 @@ function bridgePayload(command, payload) {
   throw error;
 }
 
-function runQuantCore(command, payload) {
-  if (!fs.existsSync(CORE_BINARY)) {
-    const error = new Error("C++ core binary missing. Run npm run build:core first.");
-    error.statusCode = 500;
-    throw error;
+function buildCoreBinary() {
+  if (fs.existsSync(CORE_BINARY)) {
+    return Promise.resolve();
   }
 
+  if (buildCorePromise) {
+    return buildCorePromise;
+  }
+
+  buildCorePromise = new Promise((resolve, reject) => {
+    const child = spawn("make", ["-C", CORE_DIR], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error) => {
+      buildCorePromise = null;
+      const buildError = new Error(error.message || "Unable to build C++ core.");
+      buildError.statusCode = 500;
+      reject(buildError);
+    });
+
+    child.on("close", (code) => {
+      buildCorePromise = null;
+
+      if (code !== 0 || !fs.existsSync(CORE_BINARY)) {
+        const buildError = new Error(stderr.trim() || "Unable to build C++ core.");
+        buildError.statusCode = 500;
+        reject(buildError);
+        return;
+      }
+
+      resolve();
+    });
+  });
+
+  return buildCorePromise;
+}
+
+async function runQuantCore(command, payload) {
+  await buildCoreBinary();
   const input = bridgePayload(command, payload);
 
   return new Promise((resolve, reject) => {
