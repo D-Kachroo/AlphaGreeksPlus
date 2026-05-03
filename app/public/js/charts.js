@@ -398,7 +398,7 @@ function renderScenarioSurface(result) {
     {
       ...chartTheme,
       margin: { l: 26, r: 26, t: 82, b: 34 },
-      title: { text: "<b>3D Test Simulator</b>", x: 0.02, font: { size: 24 } },
+      title: { text: "<b>3D Test Simulator</b>", x: 0, xanchor: "left", font: { size: 24 } },
       scene: {
         xaxis: {
           title: "Stock Price ($)",
