@@ -8,9 +8,12 @@ let latestMarketData = null;
 let marketLookupTimer = null;
 let marketLookupInFlight = "";
 let backendHealthy = false;
+let marketConfigPromise = null;
 
 const MARKET_REFRESH_MS = 30 * 60 * 1000;
 const BROWSER_MARKET_CACHE_KEY = "alphagreeks.marketCache.v1";
+const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
+const TRADING_DAYS_PER_YEAR = 252;
 
 function $(id) {
   return document.getElementById(id);
@@ -79,6 +82,307 @@ function currentSymbol() {
 
 function validLookupSymbol(symbol) {
   return /^[A-Z][A-Z.\-]{0,9}$/.test(String(symbol || "").trim().toUpperCase());
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function numberFromField(source, key) {
+  const value = Number(source?.[key]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function normalizeSymbol(symbol) {
+  return String(symbol || "").trim().toUpperCase();
+}
+
+function directSymbolCandidates(symbol) {
+  const normalized = normalizeSymbol(symbol);
+  const swappedDotDash = normalized.includes(".") ? normalized.replace(/\./g, "-") : normalized;
+  const swappedDashDot = normalized.includes("-") ? normalized.replace(/-/g, ".") : normalized;
+  const compact = normalized.replace(/\s+/g, "");
+
+  return [...new Set([normalized, swappedDotDash, swappedDashDot, compact].filter(Boolean))];
+}
+
+function parseDailyCloses(payload) {
+  const series = payload["Time Series (Daily)"] || payload["Time Series (Daily Adjusted)"] || {};
+
+  return Object.entries(series)
+    .map(([date, row]) => ({
+      date,
+      close: numberFromField(row, "5. adjusted close") || numberFromField(row, "4. close"),
+      volume: numberFromField(row, "6. volume") || numberFromField(row, "5. volume"),
+    }))
+    .filter((point) => point.close > 0)
+    .sort((left, right) => (left.date < right.date ? 1 : -1));
+}
+
+function annualizedTrailingReturn(points) {
+  if (points.length < 2) {
+    return NaN;
+  }
+
+  const newest = points[0];
+  const oldest = points[Math.min(points.length - 1, 63)];
+  const periods = Math.max(1, points.indexOf(oldest));
+
+  if (!newest.close || !oldest.close) {
+    return NaN;
+  }
+
+  return Math.pow(newest.close / oldest.close, TRADING_DAYS_PER_YEAR / periods) - 1;
+}
+
+function estimateReturnAndVolatility(points, changePercent) {
+  const returns = [];
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const today = points[index].close;
+    const yesterday = points[index + 1].close;
+
+    if (today > 0 && yesterday > 0) {
+      returns.push(today / yesterday - 1);
+    }
+  }
+
+  if (returns.length < 2) {
+    return {
+      expectedReturn: clamp(changePercent, -0.25, 0.25),
+      volatility: 0.2,
+    };
+  }
+
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+  const variance =
+    returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
+  const averageReturn = mean * TRADING_DAYS_PER_YEAR;
+  const momentumReturn = annualizedTrailingReturn(points);
+  const expectedReturn = Number.isFinite(momentumReturn)
+    ? 0.65 * momentumReturn + 0.35 * averageReturn
+    : averageReturn;
+
+  return {
+    expectedReturn: clamp(expectedReturn, -1, 1),
+    volatility: clamp(Math.sqrt(variance) * Math.sqrt(TRADING_DAYS_PER_YEAR), 0.01, 2),
+  };
+}
+
+async function loadMarketConfig(force = false) {
+  if (!force && marketConfigPromise) {
+    return marketConfigPromise;
+  }
+
+  marketConfigPromise = fetch("/api/market/config", { cache: "no-store" })
+    .then(async (response) => {
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Market configuration unavailable.");
+      }
+
+      return {
+        keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
+      };
+    })
+    .catch((error) => {
+      marketConfigPromise = null;
+      throw error;
+    });
+
+  return marketConfigPromise;
+}
+
+async function fetchAlphaVantageBrowser(params) {
+  const { keys } = await loadMarketConfig();
+
+  if (!keys.length) {
+    const error = new Error("ALPHA_VANTAGE_API_KEY is required.");
+    error.statusCode = 500;
+    throw error;
+  }
+
+  let lastError = null;
+
+  for (const apiKey of keys) {
+    const url = new URL(ALPHA_VANTAGE_URL);
+
+    Object.entries({ ...params, apikey: apiKey }).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
+
+    const response = await fetch(url.toString(), { cache: "no-store" });
+
+    if (!response.ok) {
+      const error = new Error(`Alpha Vantage request failed with status ${response.status}.`);
+      error.statusCode = 502;
+      throw error;
+    }
+
+    const payload = await response.json();
+
+    if (payload["Error Message"]) {
+      const error = new Error("Alpha Vantage did not find market data for this symbol.");
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (payload.Note || payload.Information) {
+      lastError = new Error(
+        payload.Information
+          ? "Alpha Vantage daily request limit reached. Please try again later."
+          : "Alpha Vantage request limit reached. Please wait and try again."
+      );
+      lastError.statusCode = 429;
+      continue;
+    }
+
+    return payload;
+  }
+
+  throw lastError;
+}
+
+function bestMatchScore(inputSymbol, match) {
+  const input = normalizeSymbol(inputSymbol);
+  const symbol = normalizeSymbol(match?.["1. symbol"]);
+  const type = String(match?.["3. type"] || "").toLowerCase();
+  const region = String(match?.["4. region"] || "").toLowerCase();
+  const apiScore = Number(match?.["9. matchScore"] || 0);
+
+  let score = apiScore;
+
+  if (symbol === input) {
+    score += 5;
+  }
+
+  if (symbol.replace(/\./g, "-") === input.replace(/\./g, "-")) {
+    score += 3;
+  }
+
+  if (type === "equity" || type === "etf" || type === "mutual fund") {
+    score += 0.5;
+  }
+
+  if (region.includes("united states") || region.includes("canada")) {
+    score += 0.1;
+  }
+
+  return score;
+}
+
+async function resolveAlphaVantageSymbol(symbol) {
+  const payload = await fetchAlphaVantageBrowser({
+    function: "SYMBOL_SEARCH",
+    keywords: normalizeSymbol(symbol),
+  });
+  const matches = Array.isArray(payload.bestMatches) ? payload.bestMatches : [];
+
+  if (matches.length === 0) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const bestMatch = [...matches].sort(
+    (left, right) => bestMatchScore(symbol, right) - bestMatchScore(symbol, left)
+  )[0];
+  const resolved = normalizeSymbol(bestMatch?.["1. symbol"]);
+
+  if (!resolved) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return resolved;
+}
+
+async function fetchBrowserDailySeries(symbol) {
+  const candidates = directSymbolCandidates(symbol);
+  let lastNotFoundError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const payload = await fetchAlphaVantageBrowser({
+        function: "TIME_SERIES_DAILY",
+        symbol: candidate,
+        outputsize: "compact",
+      });
+
+      if (parseDailyCloses(payload).length > 0) {
+        return {
+          payload,
+          apiSymbol: candidate,
+        };
+      }
+
+      lastNotFoundError = new Error("Alpha Vantage did not find market data for this symbol.");
+      lastNotFoundError.statusCode = 400;
+    } catch (error) {
+      if (error.statusCode === 400) {
+        lastNotFoundError = error;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  const resolvedSymbol = await resolveAlphaVantageSymbol(symbol);
+
+  if (candidates.includes(resolvedSymbol)) {
+    throw lastNotFoundError;
+  }
+
+  const resolvedPayload = await fetchAlphaVantageBrowser({
+    function: "TIME_SERIES_DAILY",
+    symbol: resolvedSymbol,
+    outputsize: "compact",
+  });
+
+  if (parseDailyCloses(resolvedPayload).length === 0) {
+    const error = new Error("Alpha Vantage did not find market data for this symbol.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return {
+    payload: resolvedPayload,
+    apiSymbol: resolvedSymbol,
+  };
+}
+
+function buildBrowserMarketSnapshot(symbol, apiSymbol, dailyPayload) {
+  const dailyPoints = parseDailyCloses(dailyPayload);
+  const latestDaily = dailyPoints[0] || {};
+  const previousDaily = dailyPoints[1] || {};
+  const lastPrice = latestDaily.close || 0;
+  const previousClose = previousDaily.close || 0;
+  const changePercent = previousClose > 0 ? (lastPrice - previousClose) / previousClose : 0;
+  const metrics = estimateReturnAndVolatility(dailyPoints, changePercent);
+
+  return {
+    symbol: normalizeSymbol(symbol),
+    apiSymbol: normalizeSymbol(apiSymbol),
+    lastPrice,
+    previousClose,
+    changePercent,
+    volume: latestDaily.volume || 0,
+    latestTradingDay: latestDaily.date || "",
+    expectedReturn: metrics.expectedReturn,
+    volatility: metrics.volatility,
+    expectedReturnSource: "Alpha Vantage daily history",
+    source: "Alpha Vantage",
+    fetchedAt: new Date().toISOString(),
+    stale: false,
+  };
+}
+
+async function fetchBrowserMarketData(symbol) {
+  const dailySeries = await fetchBrowserDailySeries(symbol);
+  return buildBrowserMarketSnapshot(symbol, dailySeries.apiSymbol, dailySeries.payload);
 }
 
 function readBrowserMarketCache() {
@@ -410,11 +714,19 @@ async function refreshMarketData(options = {}) {
 
   try {
     marketLookupInFlight = symbol;
-    const response = await fetch(`/api/market/${encodeURIComponent(symbol)}`);
-    const data = await response.json();
+    let data;
 
-    if (!response.ok) {
-      throw new Error(data.error || "Market data unavailable.");
+    try {
+      data = await fetchBrowserMarketData(symbol);
+    } catch (browserError) {
+      const response = await fetch(`/api/market/${encodeURIComponent(symbol)}`);
+      const fallbackData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(browserError.message || fallbackData.error || "Market data unavailable.");
+      }
+
+      data = fallbackData;
     }
 
     if (applyMarketData(data) && options.runAnalysis !== false) {
