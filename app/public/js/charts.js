@@ -209,15 +209,14 @@ function renderGreeksRadar(greeks) {
 
   const labels = ["Delta", "Gamma", "Theta", "Vega", "Rho"];
   const formulas = [
-    `<span class="formula-line">Call Delta: e<sup>-qT</sup>N(d<sub>1</sub>)</span>
-     <span class="formula-line">Put Delta: e<sup>-qT</sup>[N(d<sub>1</sub>) - 1]</span>`,
-    `<span class="formula-line">Gamma: <span class="frac"><span>e<sup>-qT</sup>&phi;(d<sub>1</sub>)</span><span>S&sigma;&radic;T</span></span></span>`,
-    `<span class="formula-line">Call Theta: -<span class="frac"><span>S e<sup>-qT</sup>&phi;(d<sub>1</sub>)&sigma;</span><span>2&radic;T</span></span> - rK e<sup>-rT</sup>N(d<sub>2</sub>) + qS e<sup>-qT</sup>N(d<sub>1</sub>)</span>
-     <span class="formula-line">Put Theta: -<span class="frac"><span>S e<sup>-qT</sup>&phi;(d<sub>1</sub>)&sigma;</span><span>2&radic;T</span></span> + rK e<sup>-rT</sup>N(-d<sub>2</sub>) - qS e<sup>-qT</sup>N(-d<sub>1</sub>)</span>`,
-    `<span class="formula-line">Vega: S e<sup>-qT</sup>&phi;(d<sub>1</sub>)&radic;T</span>
-     <span class="formula-line">Per 1% volatility move: <span class="frac"><span>Vega</span><span>100</span></span></span>`,
-    `<span class="formula-line">Call Rho: KT e<sup>-rT</sup>N(d<sub>2</sub>)</span>
-     <span class="formula-line">Put Rho: -KT e<sup>-rT</sup>N(-d<sub>2</sub>)</span>`,
+    `<span class="formula-line">&Delta;<sub>call</sub> = <span class="frac"><span>&part;C</span><span>&part;S</span></span> = N(d<sub>1</sub>)</span>
+     <span class="formula-line">&Delta;<sub>put</sub> = <span class="frac"><span>&part;P</span><span>&part;S</span></span> = N(d<sub>1</sub>) - 1</span>`,
+    `<span class="formula-line">&Gamma;<sub>call</sub> = &Gamma;<sub>put</sub> = <span class="frac"><span>&part;<sup>2</sup>C</span><span>&part;S<sup>2</sup></span></span> = <span class="frac"><span>&part;<sup>2</sup>P</span><span>&part;S<sup>2</sup></span></span> = <span class="frac"><span>N&#8242;(d<sub>1</sub>)</span><span>S&sigma;&radic;(T - t)</span></span></span>`,
+    `<span class="formula-line">&Theta;<sub>call</sub> = <span class="frac"><span>&part;C</span><span>&part;(T - t)</span></span> = -<span class="frac"><span>SN&#8242;(d<sub>1</sub>)&sigma;</span><span>2&radic;(T - t)</span></span> - rKe<sup>-r(T - t)</sup>N(d<sub>2</sub>)</span>
+     <span class="formula-line">&Theta;<sub>put</sub> = <span class="frac"><span>&part;P</span><span>&part;(T - t)</span></span> = -<span class="frac"><span>SN&#8242;(d<sub>1</sub>)&sigma;</span><span>2&radic;(T - t)</span></span> + rKe<sup>-r(T - t)</sup>N(-d<sub>2</sub>)</span>`,
+    `<span class="formula-line">v<sub>call</sub> = v<sub>put</sub> = <span class="frac"><span>&part;C</span><span>&part;&sigma;</span></span> = <span class="frac"><span>&part;P</span><span>&part;&sigma;</span></span> = S&radic;(T - t)N&#8242;(d<sub>1</sub>)</span>`,
+    `<span class="formula-line">&rho;<sub>call</sub> = <span class="frac"><span>&part;C</span><span>&part;r</span></span> = K(T - t)e<sup>-r(T - t)</sup>N(d<sub>2</sub>)</span>
+     <span class="formula-line">&rho;<sub>put</sub> = <span class="frac"><span>&part;C</span><span>&part;r</span></span> = -K(T - t)e<sup>-r(T - t)</sup>N(d<sub>2</sub>)</span>`,
   ];
   const colors = [tradeGreen, tradeGold, tradeRed, tradeCyan, "#f5f2ec"];
   const raw = [greeks.delta, greeks.gamma, greeks.theta, greeks.vega, greeks.rho];
