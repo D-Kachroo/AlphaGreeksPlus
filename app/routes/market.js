@@ -1,21 +1,29 @@
 const express = require("express");
 const { fetchMarketData } = require("../services/market-data");
+const { ensureCoreBinary } = require("../services/quant-core");
 
 const router = express.Router();
 const MARKET_CACHE_CONTROL = "public, max-age=900, s-maxage=43200, stale-while-revalidate=86400, stale-if-error=86400";
 
-router.get("/config", (_req, res) => {
-  const keys = String(process.env.ALPHA_VANTAGE_API_KEY || "")
-    .split(",")
-    .map((key) => key.trim())
-    .filter(Boolean);
+router.get("/config", async (_req, res) => {
+  try {
+    await ensureCoreBinary();
+    const keys = String(process.env.ALPHA_VANTAGE_API_KEY || "")
+      .split(",")
+      .map((key) => key.trim())
+      .filter(Boolean);
 
-  res.set("Cache-Control", "no-store");
-  res.json({
-    provider: "alphavantage",
-    function: "TIME_SERIES_DAILY",
-    keys,
-  });
+    res.set("Cache-Control", "no-store");
+    res.json({
+      provider: "alphavantage",
+      function: "TIME_SERIES_DAILY",
+      keys,
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      error: error.message,
+    });
+  }
 });
 
 router.get("/:symbol", async (req, res) => {

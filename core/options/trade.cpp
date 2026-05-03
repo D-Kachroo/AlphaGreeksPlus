@@ -23,9 +23,67 @@ double side_multiplier(TradeSide side) {
   return side == TradeSide::Buy ? 1.0 : -1.0;
 }
 
-bool direction_matches_option(double alpha_direction, OptionType type) {
-  return (alpha_direction > 0.0 && type == OptionType::Call) ||
-         (alpha_direction < 0.0 && type == OptionType::Put);
+constexpr double kFullDirectionalConviction = 0.12;
+
+double intrinsic_value_at_target(const OptionContractInput& option, double target_spot_price) {
+  if (option.type == OptionType::Call) {
+    return std::max(target_spot_price - option.strike_price, 0.0);
+  }
+
+  return std::max(option.strike_price - target_spot_price, 0.0);
+}
+
+std::vector<TradeSide> aligned_sides(
+    double alpha_direction,
+    OptionType type) {
+  if (alpha_direction > 0.0) {
+    return type == OptionType::Call ? std::vector<TradeSide>{TradeSide::Buy}
+                                    : std::vector<TradeSide>{TradeSide::Sell};
+  }
+
+  if (alpha_direction < 0.0) {
+    return type == OptionType::Call ? std::vector<TradeSide>{TradeSide::Sell}
+                                    : std::vector<TradeSide>{TradeSide::Buy};
+  }
+
+  return {};
+}
+
+double break_even_price(
+    const OptionContractInput& option,
+    double premium) {
+  if (option.type == OptionType::Call) {
+    return option.strike_price + premium;
+  }
+
+  return option.strike_price - premium;
+}
+
+double target_buffer(
+    const OptionContractInput& option,
+    double premium,
+    TradeSide side,
+    double target_spot_price) {
+  const double break_even = break_even_price(option, premium);
+  const double normalizer = std::max(option.spot_price, 0.01);
+
+  if (option.type == OptionType::Call) {
+    return side == TradeSide::Buy ? (target_spot_price - break_even) / normalizer
+                                  : (break_even - target_spot_price) / normalizer;
+  }
+
+  return side == TradeSide::Buy ? (break_even - target_spot_price) / normalizer
+                                : (target_spot_price - break_even) / normalizer;
+}
+
+double short_risk_capital(
+    const OptionContractInput& option,
+    double premium) {
+  if (option.type == OptionType::Call) {
+    return std::max(option.spot_price + premium, option.strike_price + premium);
+  }
+
+  return std::max(option.strike_price - premium, premium);
 }
 
 std::string option_name(OptionType type) {
@@ -48,6 +106,7 @@ GreeksOutput calculate_all_greeks(const OptionContractInput& option) {
 
 double score_trade(
     const AlphaSignalOutput& signal,
+    const AlphaSignalInput& signal_input,
     const OptionContractInput& option,
     double premium,
     const GreeksOutput& greeks,
@@ -61,20 +120,37 @@ double score_trade(
   const double directional_alignment = std::max(0.0, direction * signed_delta);
   const double conviction = signal_conviction(signal);
   const double premium_floor = std::max(premium, 0.01);
+  const double risk_capital =
+      side == TradeSide::Buy ? premium_floor : short_risk_capital(option, premium_floor);
+  const double target_intrinsic = intrinsic_value_at_target(option, signal_input.fair_value_estimate);
+  const double target_profit = side_multiplier(side) * (target_intrinsic - premium);
+  const double conviction_weight = math::clamp(conviction / kFullDirectionalConviction, 0.0, 1.0);
+  const double strategy_preference = side == TradeSide::Buy ? conviction_weight
+                                                            : 1.0 - conviction_weight;
+  const double fair_value_buffer = target_buffer(
+      option,
+      premium_floor,
+      side,
+      signal_input.fair_value_estimate);
+  const double income_yield = side == TradeSide::Sell ? premium_floor / risk_capital : 0.0;
 
   // Gamma is curvature. Scaling by spot puts it near delta units for scoring.
   const double gamma_exposure = signed_gamma * option.spot_price;
 
   // Daily theta and one-point vega are normalized by premium to compare contracts.
-  const double theta_yield = signed_theta / premium_floor;
-  const double vega_load = std::abs(signed_vega) / premium_floor;
+  const double theta_yield = signed_theta / risk_capital;
+  const double vega_load = std::abs(signed_vega) / risk_capital;
   const double premium_ratio = premium / option.spot_price;
+  const double target_return_on_premium = target_profit / risk_capital;
 
-  return 100.0 * conviction * directional_alignment +
-         5.0 * gamma_exposure +
-         25.0 * theta_yield -
-         3.0 * vega_load -
-         10.0 * premium_ratio;
+  return 18.0 * directional_alignment +
+         60.0 * target_return_on_premium +
+         32.0 * strategy_preference * fair_value_buffer +
+         18.0 * income_yield +
+         4.0 * gamma_exposure +
+         18.0 * theta_yield -
+         2.0 * vega_load -
+         6.0 * premium_ratio;
 }
 
 void validate_trade_search(const TradeSearchInput& input) {
@@ -105,10 +181,6 @@ std::vector<TradeCandidateOutput> rank_trades(const TradeSearchInput& input) {
   std::vector<TradeCandidateOutput> candidates;
 
   for (const OptionContractInput& option : input.contracts) {
-    if (!direction_matches_option(direction, option.type)) {
-      continue;
-    }
-
     const PricingOutput pricing = price_option(option);
 
     if (input.max_premium > 0.0 && pricing.theoretical_price > input.max_premium) {
@@ -121,21 +193,22 @@ std::vector<TradeCandidateOutput> rank_trades(const TradeSearchInput& input) {
       continue;
     }
 
-    const TradeSide side = TradeSide::Buy;
+    for (const TradeSide side : aligned_sides(direction, option.type)) {
+      TradeCandidateOutput candidate;
+      candidate.type = option.type;
+      candidate.side = side;
+      candidate.strike_price = option.strike_price;
+      candidate.time_to_expiration_years = option.time_to_expiration_years;
+      candidate.estimated_premium = pricing.theoretical_price;
+      candidate.greeks = greeks;
+      candidate.score = score_trade(
+          signal, input.signal, option, pricing.theoretical_price, greeks, side);
+      candidate.rationale = signal.rating + ": " + side_name(side) + " " +
+                            option_name(option.type) +
+                            " with fair-value target and Greek-adjusted risk.";
 
-    TradeCandidateOutput candidate;
-    candidate.type = option.type;
-    candidate.side = side;
-    candidate.strike_price = option.strike_price;
-    candidate.time_to_expiration_years = option.time_to_expiration_years;
-    candidate.estimated_premium = pricing.theoretical_price;
-    candidate.greeks = greeks;
-    candidate.score = score_trade(signal, option, pricing.theoretical_price, greeks, side);
-    candidate.rationale = signal.rating + ": " + side_name(side) + " " +
-                          option_name(option.type) +
-                          " with aligned delta and Greek-adjusted risk.";
-
-    candidates.push_back(candidate);
+      candidates.push_back(candidate);
+    }
   }
 
   std::sort(candidates.begin(), candidates.end(),

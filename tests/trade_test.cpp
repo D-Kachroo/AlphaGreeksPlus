@@ -71,12 +71,32 @@ double score_for_strike(
   std::exit(1);
 }
 
-void require_all_type(
+void require_true(bool condition, const std::string& label);
+
+void require_directionally_bullish(
     const std::vector<ag::TradeCandidateOutput>& ranked,
-    ag::OptionType type,
     const std::string& label) {
   for (const ag::TradeCandidateOutput& candidate : ranked) {
-    if (candidate.type != type) {
+    const bool valid_structure =
+        (candidate.side == ag::TradeSide::Buy && candidate.type == ag::OptionType::Call) ||
+        (candidate.side == ag::TradeSide::Sell && candidate.type == ag::OptionType::Put);
+
+    if (!valid_structure) {
+      std::cerr << label << " failed\n";
+      std::exit(1);
+    }
+  }
+}
+
+void require_directionally_bearish(
+    const std::vector<ag::TradeCandidateOutput>& ranked,
+    const std::string& label) {
+  for (const ag::TradeCandidateOutput& candidate : ranked) {
+    const bool valid_structure =
+        (candidate.side == ag::TradeSide::Buy && candidate.type == ag::OptionType::Put) ||
+        (candidate.side == ag::TradeSide::Sell && candidate.type == ag::OptionType::Call);
+
+    if (!valid_structure) {
       std::cerr << label << " failed\n";
       std::exit(1);
     }
@@ -89,15 +109,23 @@ int main() {
   const ag::TradeSearchInput baseline = sample_trade_search();
   const std::vector<ag::TradeCandidateOutput> baseline_ranked = ag::rank_trades(baseline);
   require_true(!baseline_ranked.empty(), "baseline ranked trades");
-  require_all_type(baseline_ranked, ag::OptionType::Call, "bullish search keeps only calls");
+  require_directionally_bullish(baseline_ranked, "bullish search keeps only bullish structures");
   require_close(baseline_ranked.front().strike_price, 95.0, 1e-8, "baseline best strike");
+  require_true(
+      baseline_ranked.front().side == ag::TradeSide::Buy &&
+          baseline_ranked.front().type == ag::OptionType::Call,
+      "strong bullish baseline prefers long call");
 
   ag::TradeSearchInput tighter_budget = baseline;
   tighter_budget.max_premium = 10.0;
   tighter_budget.max_absolute_delta = 0.75;
   const std::vector<ag::TradeCandidateOutput> tighter_ranked = ag::rank_trades(tighter_budget);
   require_true(!tighter_ranked.empty(), "tighter ranked trades");
-  require_close(score_for_strike(tighter_ranked, 95.0), score_for_strike(baseline_ranked, 95.0), 1e-8, "passing trade score unchanged");
+  require_close(
+      score_for_strike(tighter_ranked, 95.0),
+      score_for_strike(baseline_ranked, 95.0),
+      1e-8,
+      "passing trade score unchanged");
 
   ag::TradeSearchInput tight_filter = baseline;
   tight_filter.max_premium = 9.0;
@@ -134,7 +162,27 @@ int main() {
   bearish.signal.fair_value_estimate = 85.0;
   const std::vector<ag::TradeCandidateOutput> bearish_ranked = ag::rank_trades(bearish);
   require_true(!bearish_ranked.empty(), "bearish ranked trades");
-  require_all_type(bearish_ranked, ag::OptionType::Put, "bearish search keeps only puts");
+  require_directionally_bearish(bearish_ranked, "bearish search keeps only bearish structures");
+  require_true(
+      bearish_ranked.front().side == ag::TradeSide::Buy &&
+          bearish_ranked.front().type == ag::OptionType::Put,
+      "strong bearish signal prefers long put");
+
+  ag::TradeSearchInput low_conviction_bullish = sample_trade_search();
+  low_conviction_bullish.signal.fair_value_estimate = 103.0;
+  low_conviction_bullish.signal.confidence = 0.50;
+  const ag::TradeCandidateOutput low_bull_trade = ag::select_best_trade(low_conviction_bullish);
+  require_true(
+      low_bull_trade.side == ag::TradeSide::Sell && low_bull_trade.type == ag::OptionType::Put,
+      "modest bullish signal prefers short put income");
+
+  ag::TradeSearchInput low_conviction_bearish = sample_trade_search();
+  low_conviction_bearish.signal.fair_value_estimate = 97.0;
+  low_conviction_bearish.signal.confidence = 0.50;
+  const ag::TradeCandidateOutput low_bear_trade = ag::select_best_trade(low_conviction_bearish);
+  require_true(
+      low_bear_trade.side == ag::TradeSide::Sell && low_bear_trade.type == ag::OptionType::Call,
+      "modest bearish signal prefers short call income");
 
   return 0;
 }

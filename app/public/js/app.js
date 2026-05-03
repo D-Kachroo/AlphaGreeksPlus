@@ -9,11 +9,14 @@ let marketLookupTimer = null;
 let marketLookupInFlight = "";
 let backendHealthy = false;
 let marketConfigPromise = null;
+let analysisRunToken = 0;
+let scenarioRunToken = 0;
 
 const MARKET_REFRESH_MS = 30 * 60 * 1000;
 const BROWSER_MARKET_CACHE_KEY = "alphagreeks.marketCache.v1";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const TRADING_DAYS_PER_YEAR = 252;
+const MARKET_REQUEST_TIMEOUT_MS = 6000;
 
 function $(id) {
   return document.getElementById(id);
@@ -207,12 +210,33 @@ async function fetchAlphaVantageBrowser(params) {
 
   for (const apiKey of keys) {
     const url = new URL(ALPHA_VANTAGE_URL);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), MARKET_REQUEST_TIMEOUT_MS);
 
     Object.entries({ ...params, apikey: apiKey }).forEach(([key, value]) => {
       url.searchParams.set(key, value);
     });
 
-    const response = await fetch(url.toString(), { cache: "no-store" });
+    let response;
+
+    try {
+      response = await fetch(url.toString(), {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (error) {
+      window.clearTimeout(timeout);
+
+      if (error.name === "AbortError") {
+        const timeoutError = new Error("Alpha Vantage request timed out.");
+        timeoutError.statusCode = 504;
+        throw timeoutError;
+      }
+
+      throw error;
+    }
+
+    window.clearTimeout(timeout);
 
     if (!response.ok) {
       const error = new Error(`Alpha Vantage request failed with status ${response.status}.`);
@@ -704,12 +728,27 @@ async function refreshMarketData(options = {}) {
     return false;
   }
 
-  if (!options.force && latestMarketData?.symbol === symbol) {
+  if (!options.force && latestMarketData?.symbol === symbol && !latestMarketData.stale) {
     return true;
   }
 
   if (marketLookupInFlight === symbol) {
     return false;
+  }
+
+  const cachedData = loadBrowserMarketData(symbol);
+
+  if (
+    cachedData &&
+    (!latestMarketData ||
+      latestMarketData.symbol !== symbol ||
+      (!options.force && latestMarketData.stale))
+  ) {
+    applyMarketData(cachedData);
+
+    if (options.runAnalysis !== false) {
+      scheduleAnalysisRun();
+    }
   }
 
   try {
@@ -735,8 +774,6 @@ async function refreshMarketData(options = {}) {
 
     return true;
   } catch (error) {
-    const cachedData = loadBrowserMarketData(symbol);
-
     if (cachedData && applyMarketData(cachedData)) {
       if (options.runAnalysis !== false) {
         scheduleAnalysisRun();
@@ -1250,6 +1287,8 @@ function updateScenarioMetrics(result) {
 }
 
 async function runAnalysis() {
+  const token = ++analysisRunToken;
+
   if (!hasAnalysisInputs()) {
     clearAnalysisOutputs();
     return null;
@@ -1257,6 +1296,11 @@ async function runAnalysis() {
 
   setRunStatus("Analyzing");
   const result = await postJson("/api/analyze", buildAnalysisPayload());
+
+  if (token !== analysisRunToken) {
+    return null;
+  }
+
   latestAnalysis = result;
   updateAnalysisMetrics(result);
   window.AlphaGreeksCharts.renderTradeScores(result.rankedTrades);
@@ -1266,6 +1310,8 @@ async function runAnalysis() {
 }
 
 async function runScenario() {
+  const token = ++scenarioRunToken;
+
   if (!latestAnalysis?.bestTrade || !contractForTrade(latestAnalysis.bestTrade)) {
     return null;
   }
@@ -1273,6 +1319,11 @@ async function runScenario() {
   setRunStatus("Simulating");
   const payload = buildScenarioPayload();
   const result = await postJson("/api/simulate", payload);
+
+  if (token !== scenarioRunToken) {
+    return null;
+  }
+
   updateScenarioMetrics(result);
   window.AlphaGreeksCharts.renderScenarioCharts(result, {
     option: payload.option,
@@ -1298,7 +1349,8 @@ function scheduleAnalysisRun() {
   updateSliderLabels();
   updateMarketTape();
   window.clearTimeout(analysisTimer);
-  analysisTimer = window.setTimeout(runAll, 220);
+  scenarioRunToken += 1;
+  analysisTimer = window.setTimeout(runAll, 80);
 }
 
 async function runAll() {
@@ -1416,6 +1468,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindEvents();
   updateDeskWidgets();
   updateMarketTape();
+  loadMarketConfig().catch(() => {});
   window.setInterval(updateDeskWidgets, 1000);
   window.setInterval(() => {
     loadHealthStatus().catch(() => {});

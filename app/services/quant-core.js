@@ -155,6 +155,10 @@ function buildCoreBinary() {
   return buildCorePromise;
 }
 
+function ensureCoreBinary() {
+  return buildCoreBinary();
+}
+
 async function runQuantCore(command, payload) {
   await buildCoreBinary();
   const input = bridgePayload(command, payload);
@@ -199,5 +203,6 @@ async function runQuantCore(command, payload) {
 }
 
 module.exports = {
+  ensureCoreBinary,
   runQuantCore,
 };

@@ -4,6 +4,7 @@ const path = require("path");
 
 const analyzeRoutes = require("./routes/analyze");
 const marketRoutes = require("./routes/market");
+const { ensureCoreBinary } = require("./services/quant-core");
 const simulateRoutes = require("./routes/simulate");
 
 function loadLocalEnv() {
@@ -38,11 +39,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-app.get("/api/health", (_req, res) => {
-  res.json({
-    status: "ok",
-    project: "AlphaGreeks+",
-  });
+app.get("/api/health", async (_req, res) => {
+  try {
+    await ensureCoreBinary();
+    res.json({
+      status: "ok",
+      project: "AlphaGreeks+",
+    });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({
+      error: error.message,
+    });
+  }
 });
 
 app.use("/api/analyze", analyzeRoutes);

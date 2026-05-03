@@ -1,0 +1,83 @@
+{
+  "AAPL": {
+    "lastPrice": 212.4,
+    "previousClose": 210.9,
+    "changePercent": 0.0071,
+    "volume": 57300000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.12,
+    "volatility": 0.24
+  },
+  "MSFT": {
+    "lastPrice": 424.62,
+    "previousClose": 420.31,
+    "changePercent": 0.0103,
+    "volume": 27500000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.11,
+    "volatility": 0.31
+  },
+  "TSLA": {
+    "lastPrice": 171.88,
+    "previousClose": 168.73,
+    "changePercent": 0.0187,
+    "volume": 89200000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.18,
+    "volatility": 0.49
+  },
+  "NVDA": {
+    "lastPrice": 118.35,
+    "previousClose": 116.92,
+    "changePercent": 0.0122,
+    "volume": 64200000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.19,
+    "volatility": 0.43
+  },
+  "AMZN": {
+    "lastPrice": 186.74,
+    "previousClose": 184.81,
+    "changePercent": 0.0104,
+    "volume": 39500000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.13,
+    "volatility": 0.29
+  },
+  "META": {
+    "lastPrice": 508.91,
+    "previousClose": 503.74,
+    "changePercent": 0.0103,
+    "volume": 16200000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.14,
+    "volatility": 0.3
+  },
+  "GOOGL": {
+    "lastPrice": 176.42,
+    "previousClose": 174.96,
+    "changePercent": 0.0083,
+    "volume": 24100000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.12,
+    "volatility": 0.25
+  },
+  "SPY": {
+    "lastPrice": 523.48,
+    "previousClose": 520.31,
+    "changePercent": 0.0061,
+    "volume": 66400000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.08,
+    "volatility": 0.18
+  },
+  "QQQ": {
+    "lastPrice": 448.26,
+    "previousClose": 444.52,
+    "changePercent": 0.0084,
+    "volume": 51200000,
+    "latestTradingDay": "2026-04-29",
+    "expectedReturn": 0.09,
+    "volatility": 0.21
+  }
+}
