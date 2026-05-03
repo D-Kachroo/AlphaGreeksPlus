@@ -143,11 +143,11 @@ double score_trade(
   const double premium_ratio = premium / option.spot_price;
   const double target_return_on_premium = target_profit / risk_capital;
 
-  return 18.0 * directional_alignment +
+  return 8.0 * directional_alignment +
          60.0 * target_return_on_premium +
          32.0 * strategy_preference * fair_value_buffer +
          18.0 * income_yield +
-         4.0 * gamma_exposure +
+         0.5 * gamma_exposure +
          18.0 * theta_yield -
          2.0 * vega_load -
          6.0 * premium_ratio;

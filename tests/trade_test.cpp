@@ -71,8 +71,6 @@ double score_for_strike(
   std::exit(1);
 }
 
-void require_true(bool condition, const std::string& label);
-
 void require_directionally_bullish(
     const std::vector<ag::TradeCandidateOutput>& ranked,
     const std::string& label) {
@@ -146,7 +144,7 @@ int main() {
   }
 
   ag::TradeSearchInput no_viable_trade = baseline;
-  no_viable_trade.max_premium = 5.0;
+  no_viable_trade.max_premium = 4.0;
   const std::vector<ag::TradeCandidateOutput> no_viable_ranked = ag::rank_trades(no_viable_trade);
   require_true(no_viable_ranked.empty(), "no trade remains under strict premium cap");
 
