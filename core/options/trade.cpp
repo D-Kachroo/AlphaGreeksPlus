@@ -23,15 +23,8 @@ double side_multiplier(TradeSide side) {
   return side == TradeSide::Buy ? 1.0 : -1.0;
 }
 
-constexpr double kFullDirectionalConviction = 0.12;
-
-double intrinsic_value_at_target(const OptionContractInput& option, double target_spot_price) {
-  if (option.type == OptionType::Call) {
-    return std::max(target_spot_price - option.strike_price, 0.0);
-  }
-
-  return std::max(option.strike_price - target_spot_price, 0.0);
-}
+constexpr double kMinimumVolatility = 0.01;
+constexpr double kMinimumTime = 1.0 / 365.0;
 
 std::vector<TradeSide> aligned_sides(
     double alpha_direction,
@@ -86,6 +79,28 @@ double short_risk_capital(
   return std::max(option.strike_price - premium, premium);
 }
 
+double target_option_value(
+    const OptionContractInput& option,
+    double target_spot_price) {
+  OptionContractInput target = option;
+  target.spot_price = std::max(target_spot_price, 0.01);
+  return black_scholes_price(target);
+}
+
+double signal_move_units(
+    const AlphaSignalInput& signal_input,
+    const OptionContractInput& option) {
+  const double safe_volatility = std::max(signal_input.volatility, kMinimumVolatility);
+  const double safe_time = std::max(option.time_to_expiration_years, kMinimumTime);
+  const double expected_move = option.spot_price * safe_volatility * std::sqrt(safe_time);
+
+  if (expected_move <= 0.0) {
+    return 0.0;
+  }
+
+  return std::abs(signal_input.fair_value_estimate - option.spot_price) / expected_move;
+}
+
 std::string option_name(OptionType type) {
   return type == OptionType::Call ? "call" : "put";
 }
@@ -118,39 +133,58 @@ double score_trade(
   const double signed_vega = greeks.vega * side_multiplier(side);
 
   const double directional_alignment = std::max(0.0, direction * signed_delta);
-  const double conviction = signal_conviction(signal);
+  const double signal_conviction_value = signal_conviction(signal);
   const double premium_floor = std::max(premium, 0.01);
   const double risk_capital =
       side == TradeSide::Buy ? premium_floor : short_risk_capital(option, premium_floor);
-  const double target_intrinsic = intrinsic_value_at_target(option, signal_input.fair_value_estimate);
-  const double target_profit = side_multiplier(side) * (target_intrinsic - premium);
-  const double conviction_weight = math::clamp(conviction / kFullDirectionalConviction, 0.0, 1.0);
-  const double strategy_preference = side == TradeSide::Buy ? conviction_weight
-                                                            : 1.0 - conviction_weight;
+  const double repriced_target = target_option_value(option, signal_input.fair_value_estimate);
+  const double target_profit = side_multiplier(side) * (repriced_target - premium);
+  const double conviction_weight = math::clamp(
+      signal_move_units(signal_input, option) * math::clamp(signal.confidence, 0.0, 1.0) / 1.10,
+      0.0, 1.0);
+  const double strategy_preference =
+      side == TradeSide::Buy ? conviction_weight : 1.0 - conviction_weight;
   const double fair_value_buffer = target_buffer(
       option,
       premium_floor,
       side,
       signal_input.fair_value_estimate);
   const double income_yield = side == TradeSide::Sell ? premium_floor / risk_capital : 0.0;
+  const double theta_carry = side == TradeSide::Sell ? std::max(-signed_theta, 0.0) / risk_capital
+                                                     : 0.0;
+  const double theta_drag = side == TradeSide::Buy ? std::max(-greeks.theta, 0.0) / premium_floor
+                                                   : 0.0;
 
   // Gamma is curvature. Scaling by spot puts it near delta units for scoring.
   const double gamma_exposure = signed_gamma * option.spot_price;
 
-  // Daily theta and one-point vega are normalized by premium to compare contracts.
-  const double theta_yield = signed_theta / risk_capital;
+  // One-point vega is normalized by capital at risk to compare contracts.
   const double vega_load = std::abs(signed_vega) / risk_capital;
   const double premium_ratio = premium / option.spot_price;
   const double target_return_on_premium = target_profit / risk_capital;
+  const double payoff_weight =
+      side == TradeSide::Buy ? strategy_preference : 0.40 + 0.60 * strategy_preference;
+  const double weighted_target_return = target_return_on_premium * payoff_weight;
+  const double regime_penalty =
+      side == TradeSide::Buy
+          ? (conviction_weight < 0.12 ? 20.0 * (0.12 - conviction_weight) / 0.12 : 0.0)
+          : (conviction_weight > 0.88 ? 10.0 * (conviction_weight - 0.88) / 0.12 : 0.0);
+  const double low_edge_penalty =
+      side == TradeSide::Buy
+          ? (signal_conviction_value < 0.03 ? 20.0 * (0.03 - signal_conviction_value) / 0.03 : 0.0)
+          : 0.0;
 
-  return 8.0 * directional_alignment +
-         60.0 * target_return_on_premium +
-         32.0 * strategy_preference * fair_value_buffer +
-         18.0 * income_yield +
-         0.5 * gamma_exposure +
-         18.0 * theta_yield -
-         2.0 * vega_load -
-         6.0 * premium_ratio;
+  return 60.0 * weighted_target_return +
+         18.0 * strategy_preference * fair_value_buffer +
+         10.0 * directional_alignment +
+         10.0 * income_yield +
+         10.0 * theta_carry -
+         8.0 * theta_drag +
+         1.5 * gamma_exposure -
+         4.0 * vega_load -
+         6.0 * premium_ratio -
+         regime_penalty -
+         low_edge_penalty;
 }
 
 void validate_trade_search(const TradeSearchInput& input) {

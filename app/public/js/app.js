@@ -17,6 +17,8 @@ const BROWSER_MARKET_CACHE_KEY = "alphagreeks.marketCache.v1";
 const ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query";
 const TRADING_DAYS_PER_YEAR = 252;
 const MARKET_REQUEST_TIMEOUT_MS = 6000;
+const CALENDAR_DAYS_PER_YEAR = 365;
+const BASIS_POINT = 0.0001;
 
 function $(id) {
   return document.getElementById(id);
@@ -445,10 +447,16 @@ function loadBrowserMarketData(symbol) {
     return null;
   }
 
+  const cacheAgeMs = Date.now() - Number(entry.timestamp || Date.now());
+  const latestTradingDayTime = Date.parse(`${entry.data.latestTradingDay || ""}T00:00:00Z`);
+  const recentTradingDay = cacheAgeMs <= 36 * 60 * 60 * 1000;
+  const recentDailySnapshot =
+    Number.isFinite(latestTradingDayTime) && Date.now() - latestTradingDayTime <= 4 * 24 * 60 * 60 * 1000;
+
   return {
     ...entry.data,
-    stale: true,
-    cacheAgeMs: Date.now() - Number(entry.timestamp || Date.now()),
+    stale: !(recentTradingDay || recentDailySnapshot),
+    cacheAgeMs,
   };
 }
 
@@ -530,6 +538,550 @@ function generatedContractsFromMarket(price, volatility) {
     { ...base, type: "put", strikePrice: roundedInput(putMidStrike, 2), timeToExpirationYears: 0.5 },
     { ...base, type: "put", strikePrice: roundedInput(putFarStrike, 2), timeToExpirationYears: 0.75 },
   ];
+}
+
+function erfApproximation(value) {
+  const sign = value < 0 ? -1 : 1;
+  const absolute = Math.abs(value);
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+  const t = 1 / (1 + p * absolute);
+  const polynomial =
+    (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t);
+  return sign * (1 - polynomial * Math.exp(-absolute * absolute));
+}
+
+function normalPdf(value) {
+  return Math.exp(-0.5 * value * value) / Math.sqrt(2 * Math.PI);
+}
+
+function normalCdf(value) {
+  return 0.5 * (1 + erfApproximation(value / Math.sqrt(2)));
+}
+
+function normalizeOption(option) {
+  return {
+    type: String(option.type || "").toLowerCase(),
+    spotPrice: Number(option.spotPrice),
+    strikePrice: Number(option.strikePrice),
+    riskFreeRate: Number(option.riskFreeRate),
+    volatility: Number(option.volatility),
+    timeToExpirationYears: Number(option.timeToExpirationYears),
+    dividendYield: Number(option.dividendYield),
+  };
+}
+
+function intrinsicValue(type, spotPrice, strikePrice) {
+  return type === "call"
+    ? Math.max(spotPrice - strikePrice, 0)
+    : Math.max(strikePrice - spotPrice, 0);
+}
+
+function discountFactor(rate, timeToExpirationYears) {
+  return Math.exp(-rate * timeToExpirationYears);
+}
+
+function dividendDiscountFactor(dividendYield, timeToExpirationYears) {
+  return Math.exp(-dividendYield * timeToExpirationYears);
+}
+
+function discountedSpotValue(option) {
+  return option.spotPrice * dividendDiscountFactor(option.dividendYield, option.timeToExpirationYears);
+}
+
+function discountedStrikeValue(option) {
+  return option.strikePrice * discountFactor(option.riskFreeRate, option.timeToExpirationYears);
+}
+
+function deterministicDiscountedPayoff(option) {
+  const spotLeg = discountedSpotValue(option);
+  const strikeLeg = discountedStrikeValue(option);
+  return option.type === "call"
+    ? Math.max(spotLeg - strikeLeg, 0)
+    : Math.max(strikeLeg - spotLeg, 0);
+}
+
+function blackScholesTerms(option) {
+  const varianceTerm = 0.5 * option.volatility * option.volatility;
+  const sqrtTime = Math.sqrt(option.timeToExpirationYears);
+  const numerator =
+    Math.log(option.spotPrice / option.strikePrice) +
+    (option.riskFreeRate - option.dividendYield + varianceTerm) * option.timeToExpirationYears;
+  const denominator = option.volatility * sqrtTime;
+  const d1 = numerator / denominator;
+  const d2 = d1 - option.volatility * sqrtTime;
+  const dividendDiscount = dividendDiscountFactor(option.dividendYield, option.timeToExpirationYears);
+  const rateDiscount = discountFactor(option.riskFreeRate, option.timeToExpirationYears);
+
+  return {
+    sqrtTime,
+    d1,
+    d2,
+    dividendDiscount,
+    rateDiscount,
+    discountedSpot: option.spotPrice * dividendDiscount,
+    discountedStrike: option.strikePrice * rateDiscount,
+    pdfD1: normalPdf(d1),
+  };
+}
+
+function blackScholesPrice(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0) {
+    return intrinsicValue(option.type, option.spotPrice, option.strikePrice);
+  }
+
+  if (option.volatility === 0) {
+    return deterministicDiscountedPayoff(option);
+  }
+
+  const terms = blackScholesTerms(option);
+  return option.type === "call"
+    ? terms.discountedSpot * normalCdf(terms.d1) - terms.discountedStrike * normalCdf(terms.d2)
+    : terms.discountedStrike * normalCdf(-terms.d2) - terms.discountedSpot * normalCdf(-terms.d1);
+}
+
+function calculateDelta(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0) {
+    if (option.spotPrice === option.strikePrice) {
+      return option.type === "call" ? 0.5 : -0.5;
+    }
+
+    if (option.type === "call") {
+      return option.spotPrice > option.strikePrice ? 1 : 0;
+    }
+
+    return option.spotPrice < option.strikePrice ? -1 : 0;
+  }
+
+  if (option.volatility === 0) {
+    const forward =
+      option.spotPrice *
+      Math.exp((option.riskFreeRate - option.dividendYield) * option.timeToExpirationYears);
+    const dividendDiscount = dividendDiscountFactor(option.dividendYield, option.timeToExpirationYears);
+
+    if (forward === option.strikePrice) {
+      return option.type === "call" ? 0.5 * dividendDiscount : -0.5 * dividendDiscount;
+    }
+
+    if (option.type === "call") {
+      return forward > option.strikePrice ? dividendDiscount : 0;
+    }
+
+    return forward < option.strikePrice ? -dividendDiscount : 0;
+  }
+
+  const terms = blackScholesTerms(option);
+  return option.type === "call"
+    ? terms.dividendDiscount * normalCdf(terms.d1)
+    : terms.dividendDiscount * (normalCdf(terms.d1) - 1);
+}
+
+function calculateGamma(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0 || option.volatility === 0) {
+    return 0;
+  }
+
+  const terms = blackScholesTerms(option);
+  return (
+    terms.dividendDiscount *
+    terms.pdfD1 /
+    (option.spotPrice * option.volatility * terms.sqrtTime)
+  );
+}
+
+function thetaPerYear(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0) {
+    return 0;
+  }
+
+  if (option.volatility === 0) {
+    const spotLeg = discountedSpotValue(option);
+    const strikeLeg = discountedStrikeValue(option);
+
+    if (option.type === "call") {
+      if (spotLeg <= strikeLeg) {
+        return 0;
+      }
+
+      return option.dividendYield * spotLeg - option.riskFreeRate * strikeLeg;
+    }
+
+    if (strikeLeg <= spotLeg) {
+      return 0;
+    }
+
+    return option.riskFreeRate * strikeLeg - option.dividendYield * spotLeg;
+  }
+
+  const terms = blackScholesTerms(option);
+  const diffusionDecay =
+    -(terms.discountedSpot * terms.pdfD1 * option.volatility) / (2 * terms.sqrtTime);
+
+  return option.type === "call"
+    ? diffusionDecay -
+        option.riskFreeRate * terms.discountedStrike * normalCdf(terms.d2) +
+        option.dividendYield * terms.discountedSpot * normalCdf(terms.d1)
+    : diffusionDecay +
+        option.riskFreeRate * terms.discountedStrike * normalCdf(-terms.d2) -
+        option.dividendYield * terms.discountedSpot * normalCdf(-terms.d1);
+}
+
+function calculateTheta(optionInput) {
+  return thetaPerYear(optionInput) / CALENDAR_DAYS_PER_YEAR;
+}
+
+function calculateVega(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0 || option.volatility === 0) {
+    return 0;
+  }
+
+  const terms = blackScholesTerms(option);
+  return (terms.discountedSpot * terms.pdfD1 * terms.sqrtTime) / 100;
+}
+
+function calculateRho(optionInput) {
+  const option = normalizeOption(optionInput);
+
+  if (option.timeToExpirationYears === 0) {
+    return 0;
+  }
+
+  if (option.volatility === 0) {
+    const spotLeg = discountedSpotValue(option);
+    const strikeLeg = discountedStrikeValue(option);
+    const strikeRateSensitivity =
+      option.strikePrice * option.timeToExpirationYears * discountFactor(option.riskFreeRate, option.timeToExpirationYears);
+
+    if (option.type === "call") {
+      return spotLeg > strikeLeg ? strikeRateSensitivity / 100 : 0;
+    }
+
+    return strikeLeg > spotLeg ? -strikeRateSensitivity / 100 : 0;
+  }
+
+  const terms = blackScholesTerms(option);
+  const strikeTimeDiscount =
+    option.strikePrice * option.timeToExpirationYears * terms.rateDiscount;
+
+  return option.type === "call"
+    ? (strikeTimeDiscount * normalCdf(terms.d2)) / 100
+    : (-strikeTimeDiscount * normalCdf(-terms.d2)) / 100;
+}
+
+function calculateGreeks(option) {
+  return {
+    delta: calculateDelta(option),
+    gamma: calculateGamma(option),
+    theta: calculateTheta(option),
+    vega: calculateVega(option),
+    rho: calculateRho(option),
+  };
+}
+
+function alphaRating(mispricingPercent, confidence) {
+  if (confidence < 0.25) {
+    return "Low Confidence";
+  }
+
+  if (mispricingPercent >= 0.15) {
+    return "Strong Undervalued";
+  }
+
+  if (mispricingPercent >= 0.05) {
+    return "Undervalued";
+  }
+
+  if (mispricingPercent <= -0.15) {
+    return "Strong Overvalued";
+  }
+
+  if (mispricingPercent <= -0.05) {
+    return "Overvalued";
+  }
+
+  return "Fair Value";
+}
+
+function analyzeAlphaSignal(signalInput) {
+  const marketPrice = Number(signalInput.marketPrice);
+  const fairValueEstimate = Number(signalInput.fairValueEstimate);
+  const mispricing = fairValueEstimate - marketPrice;
+  const mispricingPercent = marketPrice > 0 ? mispricing / marketPrice : 0;
+  const confidence = clamp(Number(signalInput.confidence), 0, 1);
+
+  return {
+    symbol: String(signalInput.symbol || "").trim().toUpperCase(),
+    mispricing,
+    mispricingPercent,
+    confidence,
+    rating: alphaRating(mispricingPercent, confidence),
+  };
+}
+
+function signalDirection(alpha) {
+  if (alpha.mispricingPercent > 0) {
+    return 1;
+  }
+
+  if (alpha.mispricingPercent < 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+function signalConviction(alpha) {
+  return Math.abs(alpha.mispricingPercent) * clamp(alpha.confidence, 0, 1);
+}
+
+function sideMultiplierValue(side) {
+  return side === "buy" ? 1 : -1;
+}
+
+function alignedTradeSides(direction, type) {
+  if (direction > 0) {
+    return type === "call" ? ["buy"] : ["sell"];
+  }
+
+  if (direction < 0) {
+    return type === "call" ? ["sell"] : ["buy"];
+  }
+
+  return [];
+}
+
+function breakEvenPrice(option, premium) {
+  return option.type === "call" ? option.strikePrice + premium : option.strikePrice - premium;
+}
+
+function targetBuffer(option, premium, side, targetSpotPrice) {
+  const breakEven = breakEvenPrice(option, premium);
+  const normalizer = Math.max(option.spotPrice, 0.01);
+
+  if (option.type === "call") {
+    return side === "buy"
+      ? (targetSpotPrice - breakEven) / normalizer
+      : (breakEven - targetSpotPrice) / normalizer;
+  }
+
+  return side === "buy"
+    ? (breakEven - targetSpotPrice) / normalizer
+    : (targetSpotPrice - breakEven) / normalizer;
+}
+
+function shortRiskCapital(option, premium) {
+  if (option.type === "call") {
+    return Math.max(option.spotPrice + premium, option.strikePrice + premium);
+  }
+
+  return Math.max(option.strikePrice - premium, premium);
+}
+
+function targetOptionValue(option, targetSpotPrice) {
+  return blackScholesPrice({
+    ...option,
+    spotPrice: Math.max(targetSpotPrice, 0.01),
+  });
+}
+
+function signalMoveUnits(signalInput, option) {
+  const safeVolatility = Math.max(Number(signalInput.volatility), 0.01);
+  const safeTime = Math.max(Number(option.timeToExpirationYears), 1 / CALENDAR_DAYS_PER_YEAR);
+  const expectedMove = option.spotPrice * safeVolatility * Math.sqrt(safeTime);
+
+  if (expectedMove <= 0) {
+    return 0;
+  }
+
+  return Math.abs(Number(signalInput.fairValueEstimate) - option.spotPrice) / expectedMove;
+}
+
+function scoreTrade(alpha, signalInput, option, premium, greeks, side) {
+  const direction = signalDirection(alpha);
+  const signedDelta = greeks.delta * sideMultiplierValue(side);
+  const signedGamma = greeks.gamma * sideMultiplierValue(side);
+  const signedTheta = greeks.theta * sideMultiplierValue(side);
+  const signedVega = greeks.vega * sideMultiplierValue(side);
+  const directionalAlignment = Math.max(0, direction * signedDelta);
+  const signalConvictionValue = signalConviction(alpha);
+  const premiumFloor = Math.max(premium, 0.01);
+  const riskCapital = side === "buy" ? premiumFloor : shortRiskCapital(option, premiumFloor);
+  const repricedTarget = targetOptionValue(option, Number(signalInput.fairValueEstimate));
+  const targetProfit = sideMultiplierValue(side) * (repricedTarget - premium);
+  const convictionWeight = clamp(
+    (signalMoveUnits(signalInput, option) * clamp(alpha.confidence, 0, 1)) / 1.1,
+    0,
+    1
+  );
+  const strategyPreference = side === "buy" ? convictionWeight : 1 - convictionWeight;
+  const fairValueGapBuffer = targetBuffer(
+    option,
+    premiumFloor,
+    side,
+    Number(signalInput.fairValueEstimate)
+  );
+  const incomeYield = side === "sell" ? premiumFloor / riskCapital : 0;
+  const thetaCarry = side === "sell" ? Math.max(-signedTheta, 0) / riskCapital : 0;
+  const thetaDrag = side === "buy" ? Math.max(-greeks.theta, 0) / premiumFloor : 0;
+  const gammaExposure = signedGamma * option.spotPrice;
+  const vegaLoad = Math.abs(signedVega) / riskCapital;
+  const premiumRatio = premium / option.spotPrice;
+  const targetReturnOnPremium = targetProfit / riskCapital;
+  const payoffWeight = side === "buy" ? strategyPreference : 0.4 + 0.6 * strategyPreference;
+  const weightedTargetReturn = targetReturnOnPremium * payoffWeight;
+  const regimePenalty =
+    side === "buy"
+      ? convictionWeight < 0.12
+        ? (20 * (0.12 - convictionWeight)) / 0.12
+        : 0
+      : convictionWeight > 0.88
+        ? (10 * (convictionWeight - 0.88)) / 0.12
+        : 0;
+  const lowEdgePenalty =
+    side === "buy"
+      ? signalConvictionValue < 0.03
+        ? (20 * (0.03 - signalConvictionValue)) / 0.03
+        : 0
+      : 0;
+
+  return (
+    60 * weightedTargetReturn +
+    18 * strategyPreference * fairValueGapBuffer +
+    10 * directionalAlignment +
+    10 * incomeYield +
+    10 * thetaCarry -
+    8 * thetaDrag +
+    1.5 * gammaExposure -
+    4 * vegaLoad -
+    6 * premiumRatio -
+    regimePenalty -
+    lowEdgePenalty
+  );
+}
+
+function rankTradesBrowser(input) {
+  const alpha = analyzeAlphaSignal(input.signal);
+  const direction = signalDirection(alpha);
+
+  if (direction === 0) {
+    return [];
+  }
+
+  return input.contracts
+    .map((contract) => normalizeOption(contract))
+    .flatMap((option) => {
+      const premium = blackScholesPrice(option);
+
+      if (Number(input.maxPremium) > 0 && premium > Number(input.maxPremium)) {
+        return [];
+      }
+
+      const greeks = calculateGreeks(option);
+
+      if (Math.abs(greeks.delta) > Number(input.maxAbsoluteDelta)) {
+        return [];
+      }
+
+      return alignedTradeSides(direction, option.type).map((side) => ({
+        type: option.type,
+        side,
+        strikePrice: option.strikePrice,
+        timeToExpirationYears: option.timeToExpirationYears,
+        estimatedPremium: premium,
+        greeks,
+        score: scoreTrade(alpha, input.signal, option, premium, greeks, side),
+        rationale: `${alpha.rating}: ${side} ${option.type} with fair-value target and Greek-adjusted risk.`,
+      }));
+    })
+    .sort((left, right) => right.score - left.score);
+}
+
+function runBrowserQuantAnalysis(input) {
+  const alpha = analyzeAlphaSignal(input.signal);
+  const rankedTrades = rankTradesBrowser(input);
+  const bestTrade = rankedTrades.length > 0 && rankedTrades[0].score > 0 ? rankedTrades[0] : null;
+
+  return {
+    alpha,
+    bestTrade,
+    rankedTrades,
+  };
+}
+
+function applyScenario(optionInput, scenarioInput) {
+  const option = normalizeOption(optionInput);
+
+  return {
+    ...option,
+    spotPrice: Math.max(0.01, option.spotPrice * (1 + Number(scenarioInput.spotMovePercent) / 100)),
+    volatility: Math.max(0, option.volatility * (1 + Number(scenarioInput.volatilityMovePercent) / 100)),
+    timeToExpirationYears: Math.max(
+      0,
+      option.timeToExpirationYears - Number(scenarioInput.daysForward) / CALENDAR_DAYS_PER_YEAR
+    ),
+    riskFreeRate: option.riskFreeRate + Number(scenarioInput.rateMoveBasisPoints) * BASIS_POINT,
+  };
+}
+
+function evaluateScenarioPoint(option, baseOptionPrice) {
+  const optionPrice = blackScholesPrice(option);
+  return {
+    spotPrice: option.spotPrice,
+    volatility: option.volatility,
+    timeToExpirationYears: option.timeToExpirationYears,
+    optionPrice,
+    profitLoss: optionPrice - baseOptionPrice,
+    greeks: calculateGreeks(option),
+  };
+}
+
+function runBrowserQuantScenario(input) {
+  const option = normalizeOption(input.option);
+  const baseOptionPrice = blackScholesPrice(option);
+  const stressed = applyScenario(option, input);
+  const stressedOptionPrice = blackScholesPrice(stressed);
+  const points = [];
+  const spotMoves = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
+  const volMoves = [-30, -20, -10, 0, 10, 20, 30];
+
+  spotMoves.forEach((spotMovePercent) => {
+    volMoves.forEach((volatilityMovePercent) => {
+      points.push(
+        evaluateScenarioPoint(
+          applyScenario(option, {
+            spotMovePercent,
+            volatilityMovePercent,
+            daysForward: input.daysForward,
+            rateMoveBasisPoints: input.rateMoveBasisPoints,
+          }),
+          baseOptionPrice
+        )
+      );
+    });
+  });
+
+  points.push(evaluateScenarioPoint(stressed, baseOptionPrice));
+
+  return {
+    baseOptionPrice,
+    stressedOptionPrice,
+    profitLoss: stressedOptionPrice - baseOptionPrice,
+    points,
+  };
 }
 
 function setRunStatus(text) {
@@ -1295,7 +1847,14 @@ async function runAnalysis() {
   }
 
   setRunStatus("Analyzing");
-  const result = await postJson("/api/analyze", buildAnalysisPayload());
+  const payload = buildAnalysisPayload();
+  let result;
+
+  try {
+    result = runBrowserQuantAnalysis(payload);
+  } catch (_browserError) {
+    result = await postJson("/api/analyze", payload);
+  }
 
   if (token !== analysisRunToken) {
     return null;
@@ -1318,7 +1877,13 @@ async function runScenario() {
 
   setRunStatus("Simulating");
   const payload = buildScenarioPayload();
-  const result = await postJson("/api/simulate", payload);
+  let result;
+
+  try {
+    result = runBrowserQuantScenario(payload);
+  } catch (_browserError) {
+    result = await postJson("/api/simulate", payload);
+  }
 
   if (token !== scenarioRunToken) {
     return null;
