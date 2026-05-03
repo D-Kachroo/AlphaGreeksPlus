@@ -7,6 +7,7 @@ let marketTapeState = "";
 let latestMarketData = null;
 let marketLookupTimer = null;
 let marketLookupInFlight = "";
+let backendHealthy = false;
 
 const MARKET_REFRESH_MS = 30 * 60 * 1000;
 const BROWSER_MARKET_CACHE_KEY = "alphagreeks.marketCache.v1";
@@ -331,8 +332,10 @@ function setTradeSignalMetric(metric, result) {
 async function loadHealthStatus() {
   try {
     await fetch("/api/health");
+    backendHealthy = true;
     setApiStatus("Online", "live");
   } catch (_error) {
+    backendHealthy = false;
     setApiStatus("Offline", "offline");
   }
 }
@@ -433,6 +436,8 @@ async function refreshMarketData(options = {}) {
     setRunStatus(error.message);
     if (latestMarketData) {
       setApiStatus("Cached", "cached");
+    } else if (backendHealthy) {
+      setApiStatus("Online", "live");
     } else {
       setApiStatus("Offline", "offline");
     }
@@ -1100,6 +1105,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateDeskWidgets();
   updateMarketTape();
   window.setInterval(updateDeskWidgets, 1000);
+  window.setInterval(() => {
+    loadHealthStatus().catch(() => {});
+  }, 60000);
   window.setInterval(() => {
     if (document.visibilityState === "visible" && currentSymbol()) {
       refreshMarketData({ force: true }).catch((error) => setRunStatus(error.message));
