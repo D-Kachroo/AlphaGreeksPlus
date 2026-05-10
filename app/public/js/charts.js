@@ -362,7 +362,7 @@ function renderScenarioSurface(result) {
         cmin: -maxAbsProfitLoss,
         cmax: maxAbsProfitLoss,
         colorbar: {
-          title: "Profit or Loss",
+          title: "Profit or Loss ($)",
           tickfont: { color: "#f5f2ec" },
           titlefont: { color: "#f5f2ec" },
         },
