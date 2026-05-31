@@ -32,16 +32,6 @@ docs/         Methodology, formulas, and deployment notes
 render.yaml   Render deployment configuration
 ```
 
-## Local Setup
-
-```bash
-npm install
-npm test
-npm start
-```
-
-Open `http://localhost:3000`.
-
 ## Environment
 
 Copy `.env.example` to `.env` and set:
